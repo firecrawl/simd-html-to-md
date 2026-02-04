@@ -1,13 +1,14 @@
 //! Main HTML to Markdown conversion logic with state machine.
 
 use crate::emitter::{
-    clean_text, escape_markdown, format_br, format_code,
+    clean_text_cow, escape_markdown_cow, format_br, format_code,
     format_code_block, format_emphasis, format_heading, format_hr, format_image, format_link,
     format_ordered_item, format_strikethrough, format_strong, format_unordered_item, Alignment,
     TableFormatter,
 };
-use crate::entities::decode_entities;
+use crate::entities::decode_entities_cow;
 use crate::tokenizer::{Tag, Token, Tokenizer};
+use std::borrow::Cow;
 
 /// Conversion options.
 #[derive(Debug, Clone)]
@@ -103,7 +104,7 @@ struct TableState {
 }
 
 impl Context {
-    fn new() -> Self {
+    fn with_capacity(output_capacity: usize) -> Self {
         Self {
             list_stack: Vec::new(),
             blockquote_depth: 0,
@@ -118,7 +119,7 @@ impl Context {
             link_text: String::new(),
             in_link: false,
             table: None,
-            output: String::new(),
+            output: String::with_capacity(output_capacity),
             pending_text: String::new(),
             just_emitted_block: true,
             needs_newline: false,
@@ -154,17 +155,22 @@ impl Context {
         }
 
         // Apply blockquote prefix if needed
-        let text = if self.blockquote_depth > 0 && !self.in_code_block {
-            let prefix = "> ".repeat(self.blockquote_depth);
-            text.lines()
-                .map(|line| format!("{}{}", prefix, line))
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
-            text.to_string()
-        };
+        if self.blockquote_depth > 0 && !self.in_code_block {
+            let mut first = true;
+            for line in text.lines() {
+                if !first {
+                    self.output.push('\n');
+                }
+                first = false;
 
-        self.output.push_str(&text);
+                for _ in 0..self.blockquote_depth {
+                    self.output.push_str("> ");
+                }
+                self.output.push_str(line);
+            }
+        } else {
+            self.output.push_str(text);
+        }
         self.just_emitted_block = false;
     }
 
@@ -197,7 +203,7 @@ impl Context {
 
 /// Convert HTML to Markdown.
 pub fn convert(html: &str, options: &Options) -> String {
-    let mut ctx = Context::new();
+    let mut ctx = Context::with_capacity(html.len());
     let tokenizer = Tokenizer::new(html);
 
     for token in tokenizer {
@@ -208,10 +214,17 @@ pub fn convert(html: &str, options: &Options) -> String {
     finalize(&mut ctx);
 
     // Clean up output
-    let mut output = ctx.output.trim().to_string();
-    if !output.is_empty() {
-        output.push('\n');
+    let trimmed = ctx.output.trim();
+    if trimmed.is_empty() {
+        return String::new();
     }
+    if trimmed.len() == ctx.output.len() {
+        ctx.output.push('\n');
+        return ctx.output;
+    }
+
+    let mut output = trimmed.to_string();
+    output.push('\n');
     output
 }
 
@@ -220,8 +233,8 @@ fn process_token(ctx: &mut Context, token: Token<'_>, options: &Options) {
     match token {
         Token::StartTag(tag) => process_start_tag(ctx, &tag, options),
         Token::EndTag(name) => process_end_tag(ctx, name, options),
-        Token::SelfClosingTag(tag) => process_self_closing_tag(ctx, &tag, options),
-        Token::Text(text) => process_text(ctx, text, options),
+        Token::SelfClosingTag(tag) => process_self_closing_tag(ctx, &tag),
+        Token::Text(text) => process_text(ctx, text),
         Token::Comment(_) => {} // Ignore comments
         Token::Doctype(_) => {} // Ignore doctype
     }
@@ -229,54 +242,56 @@ fn process_token(ctx: &mut Context, token: Token<'_>, options: &Options) {
 
 /// Process a start tag.
 fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
-    let name = tag.name.to_ascii_lowercase();
-
-    match name.as_str() {
+    match tag.name {
         // Headings
-        "h1" => {
+        name if name.eq_ignore_ascii_case("h1") => {
             ctx.heading_level = 1;
             ctx.heading_text.clear();
         }
-        "h2" => {
+        name if name.eq_ignore_ascii_case("h2") => {
             ctx.heading_level = 2;
             ctx.heading_text.clear();
         }
-        "h3" => {
+        name if name.eq_ignore_ascii_case("h3") => {
             ctx.heading_level = 3;
             ctx.heading_text.clear();
         }
-        "h4" => {
+        name if name.eq_ignore_ascii_case("h4") => {
             ctx.heading_level = 4;
             ctx.heading_text.clear();
         }
-        "h5" => {
+        name if name.eq_ignore_ascii_case("h5") => {
             ctx.heading_level = 5;
             ctx.heading_text.clear();
         }
-        "h6" => {
+        name if name.eq_ignore_ascii_case("h6") => {
             ctx.heading_level = 6;
             ctx.heading_text.clear();
         }
 
         // Paragraph
-        "p" => {
+        name if name.eq_ignore_ascii_case("p") => {
             ctx.in_paragraph = true;
             ctx.pending_text.clear();
         }
 
         // Emphasis
-        "strong" | "b" => {
+        name if name.eq_ignore_ascii_case("strong") || name.eq_ignore_ascii_case("b") => {
             ctx.inline_stack.push(InlineFormat::Strong);
         }
-        "em" | "i" => {
+        name if name.eq_ignore_ascii_case("em") || name.eq_ignore_ascii_case("i") => {
             ctx.inline_stack.push(InlineFormat::Emphasis);
         }
-        "del" | "s" | "strike" => {
+        name
+            if name.eq_ignore_ascii_case("del")
+                || name.eq_ignore_ascii_case("s")
+                || name.eq_ignore_ascii_case("strike") =>
+        {
             ctx.inline_stack.push(InlineFormat::Strikethrough);
         }
 
         // Code
-        "code" => {
+        name if name.eq_ignore_ascii_case("code") => {
             if ctx.in_pre {
                 // Part of a code block - extract language from class
                 if let Some(class) = tag.get_attr("class") {
@@ -298,7 +313,7 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
         }
 
         // Preformatted / code blocks
-        "pre" => {
+        name if name.eq_ignore_ascii_case("pre") => {
             ctx.in_pre = true;
             ctx.in_code_block = true;
             ctx.code_content.clear();
@@ -306,7 +321,7 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
         }
 
         // Links
-        "a" => {
+        name if name.eq_ignore_ascii_case("a") => {
             ctx.in_link = true;
             ctx.link_url = tag.get_attr("href").map(|s| s.to_string());
             ctx.link_title = tag.get_attr("title").map(|s| s.to_string());
@@ -314,14 +329,14 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
         }
 
         // Lists
-        "ul" => {
+        name if name.eq_ignore_ascii_case("ul") => {
             // If we're in a list item, emit the current content before starting nested list
             if !ctx.list_item_stack.is_empty() {
                 flush_current_list_item(ctx, options);
             }
             ctx.list_stack.push(ListType::Unordered);
         }
-        "ol" => {
+        name if name.eq_ignore_ascii_case("ol") => {
             // If we're in a list item, emit the current content before starting nested list
             if !ctx.list_item_stack.is_empty() {
                 flush_current_list_item(ctx, options);
@@ -332,17 +347,17 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
                 .unwrap_or(1);
             ctx.list_stack.push(ListType::Ordered(start));
         }
-        "li" => {
+        name if name.eq_ignore_ascii_case("li") => {
             ctx.list_item_stack.push(String::new());
         }
 
         // Blockquote
-        "blockquote" => {
+        name if name.eq_ignore_ascii_case("blockquote") => {
             ctx.blockquote_depth += 1;
         }
 
         // Table
-        "table" => {
+        name if name.eq_ignore_ascii_case("table") => {
             ctx.table = Some(TableState {
                 in_header: false,
                 in_row: false,
@@ -352,23 +367,23 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
                 formatter: TableFormatter::new(),
             });
         }
-        "thead" => {
+        name if name.eq_ignore_ascii_case("thead") => {
             if let Some(ref mut table) = ctx.table {
                 table.in_header = true;
             }
         }
-        "tbody" | "tfoot" => {
+        name if name.eq_ignore_ascii_case("tbody") || name.eq_ignore_ascii_case("tfoot") => {
             if let Some(ref mut table) = ctx.table {
                 table.in_header = false;
             }
         }
-        "tr" => {
+        name if name.eq_ignore_ascii_case("tr") => {
             if let Some(ref mut table) = ctx.table {
                 table.in_row = true;
                 table.current_row.clear();
             }
         }
-        "th" | "td" => {
+        name if name.eq_ignore_ascii_case("th") || name.eq_ignore_ascii_case("td") => {
             if let Some(ref mut table) = ctx.table {
                 table.in_cell = true;
                 table.cell_content.clear();
@@ -376,10 +391,12 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
                 // Check for alignment
                 if let Some(align) = tag.get_attr("align") {
                     let col = table.current_row.len();
-                    let alignment = match align.to_lowercase().as_str() {
-                        "center" => Alignment::Center,
-                        "right" => Alignment::Right,
-                        _ => Alignment::Left,
+                    let alignment = if align.eq_ignore_ascii_case("center") {
+                        Alignment::Center
+                    } else if align.eq_ignore_ascii_case("right") {
+                        Alignment::Right
+                    } else {
+                        Alignment::Left
                     };
                     table.formatter.set_alignment(col, alignment);
                 }
@@ -387,8 +404,17 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
         }
 
         // Div/span - just containers, process content
-        "div" | "span" | "section" | "article" | "header" | "footer" | "main" | "aside"
-        | "nav" => {
+        name
+            if name.eq_ignore_ascii_case("div")
+                || name.eq_ignore_ascii_case("span")
+                || name.eq_ignore_ascii_case("section")
+                || name.eq_ignore_ascii_case("article")
+                || name.eq_ignore_ascii_case("header")
+                || name.eq_ignore_ascii_case("footer")
+                || name.eq_ignore_ascii_case("main")
+                || name.eq_ignore_ascii_case("aside")
+                || name.eq_ignore_ascii_case("nav") =>
+        {
             // These are just containers, no special handling
         }
 
@@ -400,53 +426,66 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
 
 /// Process an end tag.
 fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
-    let name = name.to_ascii_lowercase();
-
-    match name.as_str() {
+    match name {
         // Headings
-        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+        name
+            if name.eq_ignore_ascii_case("h1")
+                || name.eq_ignore_ascii_case("h2")
+                || name.eq_ignore_ascii_case("h3")
+                || name.eq_ignore_ascii_case("h4")
+                || name.eq_ignore_ascii_case("h5")
+                || name.eq_ignore_ascii_case("h6") =>
+        {
             if ctx.heading_level > 0 {
-                let text = clean_text(&ctx.heading_text);
+                let mut heading_text = std::mem::take(&mut ctx.heading_text);
+                let text = clean_text_cow(&heading_text);
                 if !text.is_empty() {
-                    let heading = format_heading(ctx.heading_level, &text);
+                    let heading = format_heading(ctx.heading_level, text.as_ref());
                     ctx.emit_block(&heading);
                 }
+                heading_text.clear();
+                ctx.heading_text = heading_text;
                 ctx.heading_level = 0;
-                ctx.heading_text.clear();
             }
         }
 
         // Paragraph
-        "p" => {
+        name if name.eq_ignore_ascii_case("p") => {
             if ctx.in_paragraph {
-                let text = clean_text(&ctx.pending_text);
+                let mut pending = std::mem::take(&mut ctx.pending_text);
+                let text = clean_text_cow(&pending);
                 if !text.is_empty() {
-                    ctx.emit_block(&text);
+                    ctx.emit_block(text.as_ref());
                 }
+                pending.clear();
+                ctx.pending_text = pending;
                 ctx.in_paragraph = false;
-                ctx.pending_text.clear();
             }
         }
 
         // Emphasis
-        "strong" | "b" => {
+        name if name.eq_ignore_ascii_case("strong") || name.eq_ignore_ascii_case("b") => {
             if let Some(InlineFormat::Strong) = ctx.inline_stack.last() {
                 ctx.inline_stack.pop();
             }
         }
-        "em" | "i" => {
+        name if name.eq_ignore_ascii_case("em") || name.eq_ignore_ascii_case("i") => {
             if let Some(InlineFormat::Emphasis) = ctx.inline_stack.last() {
                 ctx.inline_stack.pop();
             }
         }
-        "del" | "s" | "strike" => {
+        name
+            if name.eq_ignore_ascii_case("del")
+                || name.eq_ignore_ascii_case("s")
+                || name.eq_ignore_ascii_case("strike") =>
+        {
             if let Some(InlineFormat::Strikethrough) = ctx.inline_stack.last() {
                 ctx.inline_stack.pop();
             }
         }
 
         // Code
-        "code" => {
+        name if name.eq_ignore_ascii_case("code") => {
             if !ctx.in_pre {
                 if let Some(InlineFormat::Code) = ctx.inline_stack.last() {
                     ctx.inline_stack.pop();
@@ -456,7 +495,7 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
         }
 
         // Preformatted / code blocks
-        "pre" => {
+        name if name.eq_ignore_ascii_case("pre") => {
             if ctx.in_code_block {
                 let code = format_code_block(&ctx.code_content, ctx.code_language.as_deref());
                 ctx.emit_block(&code);
@@ -468,27 +507,28 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
         }
 
         // Links
-        "a" => {
+        name if name.eq_ignore_ascii_case("a") => {
             if ctx.in_link {
                 let url = ctx.link_url.take().unwrap_or_default();
                 let title = ctx.link_title.take();
-                let text = clean_text(&ctx.link_text);
-                let text = if text.is_empty() {
-                    url.clone()
-                } else {
-                    text
+                let link = {
+                    let text = clean_text_cow(&ctx.link_text);
+                    let link_text = if text.is_empty() {
+                        url.as_str()
+                    } else {
+                        text.as_ref()
+                    };
+                    format_link(link_text, &url, title.as_deref())
                 };
-
-                let link = format_link(&text, &url, title.as_deref());
                 ctx.in_link = false;
                 ctx.link_text.clear();
                 // Emit the link to the appropriate context
-                emit_text_to_context(ctx, &link, options, false);
+                emit_text_to_context(ctx, Cow::Owned(link), false);
             }
         }
 
         // Lists
-        "ul" | "ol" => {
+        name if name.eq_ignore_ascii_case("ul") || name.eq_ignore_ascii_case("ol") => {
             ctx.list_stack.pop();
             if ctx.list_stack.is_empty() {
                 // End of outermost list
@@ -502,22 +542,22 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
                 }
             }
         }
-        "li" => {
+        name if name.eq_ignore_ascii_case("li") => {
             if let Some(item_content) = ctx.list_item_stack.pop() {
-                let content = clean_text(&item_content);
+                let content = clean_text_cow(&item_content);
                 // Only emit if there's content (might be empty if already flushed for nested list)
                 if !content.is_empty() && !ctx.list_stack.is_empty() {
                     let indent = ctx.list_indent();
                     let item = match ctx.list_stack.last_mut() {
                         Some(ListType::Unordered) => {
-                            format_unordered_item(&content, indent, options.bullet_char)
+                            format_unordered_item(content.as_ref(), indent, options.bullet_char)
                         }
                         Some(ListType::Ordered(num)) => {
-                            let item = format_ordered_item(&content, *num, indent);
+                            let item = format_ordered_item(content.as_ref(), *num, indent);
                             *num += 1;
                             item
                         }
-                        None => content,
+                        None => content.into_owned(),
                     };
 
                     // For first list item, ensure proper spacing from previous content
@@ -532,14 +572,14 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
         }
 
         // Blockquote
-        "blockquote" => {
+        name if name.eq_ignore_ascii_case("blockquote") => {
             if ctx.blockquote_depth > 0 {
                 ctx.blockquote_depth -= 1;
             }
         }
 
         // Table
-        "table" => {
+        name if name.eq_ignore_ascii_case("table") => {
             if let Some(table) = ctx.table.take() {
                 let formatted = table.formatter.format();
                 if !formatted.is_empty() {
@@ -547,12 +587,12 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
                 }
             }
         }
-        "thead" => {
+        name if name.eq_ignore_ascii_case("thead") => {
             if let Some(ref mut table) = ctx.table {
                 table.in_header = false;
             }
         }
-        "tr" => {
+        name if name.eq_ignore_ascii_case("tr") => {
             if let Some(ref mut table) = ctx.table {
                 if table.in_row {
                     if table.in_header {
@@ -565,10 +605,12 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
                 }
             }
         }
-        "th" | "td" => {
+        name if name.eq_ignore_ascii_case("th") || name.eq_ignore_ascii_case("td") => {
             if let Some(ref mut table) = ctx.table {
                 if table.in_cell {
-                    table.current_row.push(clean_text(&table.cell_content));
+                    table
+                        .current_row
+                        .push(clean_text_cow(&table.cell_content).into_owned());
                     table.cell_content.clear();
                     table.in_cell = false;
                 }
@@ -580,12 +622,10 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
 }
 
 /// Process a self-closing tag.
-fn process_self_closing_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
-    let name = tag.name.to_ascii_lowercase();
-
-    match name.as_str() {
+fn process_self_closing_tag(ctx: &mut Context, tag: &Tag<'_>) {
+    match tag.name {
         // Line break
-        "br" => {
+        name if name.eq_ignore_ascii_case("br") => {
             if ctx.in_code_block {
                 ctx.code_content.push('\n');
             } else if let Some(content) = ctx.current_list_item() {
@@ -600,29 +640,29 @@ fn process_self_closing_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options)
         }
 
         // Horizontal rule
-        "hr" => {
+        name if name.eq_ignore_ascii_case("hr") => {
             ctx.emit_block(format_hr());
         }
 
         // Image
-        "img" => {
+        name if name.eq_ignore_ascii_case("img") => {
             let src = tag.get_attr("src").unwrap_or("");
             let alt = tag.get_attr("alt").unwrap_or("");
             let title = tag.get_attr("title");
 
             let image = format_image(alt, src, title);
-            emit_text_to_context(ctx, &image, options, false);
+            emit_text_to_context(ctx, Cow::Owned(image), false);
         }
 
         // Input (for checkboxes in task lists)
-        "input" => {
+        name if name.eq_ignore_ascii_case("input") => {
             if tag.get_attr("type") == Some("checkbox") {
                 let checked = tag
                     .attributes
                     .iter()
                     .any(|a| a.name.eq_ignore_ascii_case("checked"));
                 let checkbox = if checked { "[x] " } else { "[ ] " };
-                emit_text_to_context(ctx, checkbox, options, false);
+                emit_text_to_context(ctx, Cow::Borrowed(checkbox), false);
             }
         }
 
@@ -631,34 +671,53 @@ fn process_self_closing_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options)
 }
 
 /// Process text content.
-fn process_text(ctx: &mut Context, text: &str, options: &Options) {
+fn process_text(ctx: &mut Context, text: &str) {
+    if !ctx.in_code_block
+        && !ctx.in_paragraph
+        && !ctx.in_link
+        && ctx.heading_level == 0
+        && ctx.list_item_stack.is_empty()
+        && ctx.table.as_ref().map_or(true, |table| !table.in_cell)
+        && is_ascii_whitespace_only(text)
+    {
+        // Ignore whitespace-only text between block elements.
+        return;
+    }
+
     // Decode HTML entities
-    let decoded = decode_entities(text);
+    let decoded = decode_entities_cow(text);
 
     // Handle code blocks specially - preserve all whitespace
     if ctx.in_code_block {
-        ctx.code_content.push_str(&decoded);
+        ctx.code_content.push_str(decoded.as_ref());
         return;
     }
 
     // Handle table cells
     if let Some(ref mut table) = ctx.table {
         if table.in_cell {
-            table.cell_content.push_str(&decoded);
+            table.cell_content.push_str(decoded.as_ref());
             return;
         }
     }
 
     // Apply inline formatting
-    let formatted = apply_inline_formatting(ctx, &decoded, options);
+    let formatted = apply_inline_formatting(ctx, decoded);
 
-    emit_text_to_context(ctx, &formatted, options, true);
+    emit_text_to_context(ctx, formatted, true);
+}
+
+fn is_ascii_whitespace_only(text: &str) -> bool {
+    text.as_bytes().iter().all(|b| b.is_ascii_whitespace())
 }
 
 /// Apply inline formatting to text.
-fn apply_inline_formatting(ctx: &Context, text: &str, _options: &Options) -> String {
-    let mut result = text.to_string();
+fn apply_inline_formatting<'a>(ctx: &Context, text: Cow<'a, str>) -> Cow<'a, str> {
+    if ctx.inline_stack.is_empty() {
+        return text;
+    }
 
+    let mut result = text.into_owned();
     // Apply formatting in reverse order (innermost first)
     for format in ctx.inline_stack.iter().rev() {
         result = match format {
@@ -669,27 +728,25 @@ fn apply_inline_formatting(ctx: &Context, text: &str, _options: &Options) -> Str
         };
     }
 
-    result
+    Cow::Owned(result)
 }
 
 /// Flush the current list item content (used before starting a nested list).
 fn flush_current_list_item(ctx: &mut Context, options: &Options) {
-    if let Some(item_content) = ctx.list_item_stack.last_mut() {
-        let content = clean_text(item_content);
-        item_content.clear(); // Clear so we don't emit again when </li> closes
-
+    if let Some(mut item_content) = ctx.list_item_stack.pop() {
+        let content = clean_text_cow(&item_content);
         if !content.is_empty() && !ctx.list_stack.is_empty() {
             let indent = ctx.list_indent();
             let item = match ctx.list_stack.last_mut() {
                 Some(ListType::Unordered) => {
-                    format_unordered_item(&content, indent, options.bullet_char)
+                    format_unordered_item(content.as_ref(), indent, options.bullet_char)
                 }
                 Some(ListType::Ordered(num)) => {
-                    let item = format_ordered_item(&content, *num, indent);
+                    let item = format_ordered_item(content.as_ref(), *num, indent);
                     *num += 1;
                     item
                 }
-                None => content,
+                None => content.into_owned(),
             };
 
             if ctx.list_stack.len() == 1 && !ctx.output.is_empty() && !ctx.output.ends_with('\n') {
@@ -699,30 +756,46 @@ fn flush_current_list_item(ctx: &mut Context, options: &Options) {
             ctx.output.push('\n');
             ctx.just_emitted_block = false;
         }
+        item_content.clear(); // Clear so we don't emit again when </li> closes
+        ctx.list_item_stack.push(item_content);
     }
 }
 
 /// Emit text to the appropriate context buffer.
-fn emit_text_to_context(ctx: &mut Context, text: &str, _options: &Options, escape: bool) {
+fn emit_text_to_context(ctx: &mut Context, text: Cow<'_, str>, escape: bool) {
     let text = if escape && ctx.inline_stack.is_empty() && !ctx.in_link {
-        escape_markdown(text)
+        maybe_escape_markdown(text)
     } else {
-        text.to_string()
+        text
     };
+    let text = text.as_ref();
 
     if ctx.in_link {
-        ctx.link_text.push_str(&text);
+        ctx.link_text.push_str(text);
     } else if ctx.heading_level > 0 {
-        ctx.heading_text.push_str(&text);
+        ctx.heading_text.push_str(text);
     } else if let Some(content) = ctx.current_list_item() {
-        content.push_str(&text);
+        content.push_str(text);
     } else if ctx.in_paragraph {
-        ctx.pending_text.push_str(&text);
+        ctx.pending_text.push_str(text);
     } else {
         // Bare text outside any container
         let trimmed = text.trim();
         if !trimmed.is_empty() {
-            ctx.emit_inline(&text);
+            ctx.emit_inline(text);
+        }
+    }
+}
+
+fn maybe_escape_markdown<'a>(text: Cow<'a, str>) -> Cow<'a, str> {
+    match text {
+        Cow::Borrowed(value) => escape_markdown_cow(value),
+        Cow::Owned(value) => {
+            let escaped = escape_markdown_cow(&value);
+            match escaped {
+                Cow::Borrowed(_) => Cow::Owned(value),
+                Cow::Owned(escaped) => Cow::Owned(escaped),
+            }
         }
     }
 }
@@ -731,19 +804,25 @@ fn emit_text_to_context(ctx: &mut Context, text: &str, _options: &Options, escap
 fn finalize(ctx: &mut Context) {
     // Flush any pending paragraph
     if ctx.in_paragraph && !ctx.pending_text.is_empty() {
-        let text = clean_text(&ctx.pending_text);
+        let mut pending = std::mem::take(&mut ctx.pending_text);
+        let text = clean_text_cow(&pending);
         if !text.is_empty() {
-            ctx.emit_block(&text);
+            ctx.emit_block(text.as_ref());
         }
+        pending.clear();
+        ctx.pending_text = pending;
     }
 
     // Flush any pending heading
     if ctx.heading_level > 0 && !ctx.heading_text.is_empty() {
-        let text = clean_text(&ctx.heading_text);
+        let mut heading_text = std::mem::take(&mut ctx.heading_text);
+        let text = clean_text_cow(&heading_text);
         if !text.is_empty() {
-            let heading = format_heading(ctx.heading_level, &text);
+            let heading = format_heading(ctx.heading_level, text.as_ref());
             ctx.emit_block(&heading);
         }
+        heading_text.clear();
+        ctx.heading_text = heading_text;
     }
 
     // Flush any pending code block
@@ -755,17 +834,17 @@ fn finalize(ctx: &mut Context) {
     // Flush any pending list items
     while let Some(item_content) = ctx.list_item_stack.pop() {
         if !item_content.is_empty() {
-            let content = clean_text(&item_content);
+            let content = clean_text_cow(&item_content);
             if !ctx.list_stack.is_empty() {
                 let indent = ctx.list_indent();
                 let item = match ctx.list_stack.last() {
                     Some(ListType::Unordered) => {
-                        format_unordered_item(&content, indent, '-')
+                        format_unordered_item(content.as_ref(), indent, '-')
                     }
                     Some(ListType::Ordered(num)) => {
-                        format_ordered_item(&content, *num, indent)
+                        format_ordered_item(content.as_ref(), *num, indent)
                     }
-                    None => content,
+                    None => content.into_owned(),
                 };
                 ctx.emit(&item);
                 ctx.output.push('\n');

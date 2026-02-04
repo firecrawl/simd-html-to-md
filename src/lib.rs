@@ -31,6 +31,10 @@ mod simd;
 mod tokenizer;
 
 pub use converter::Options;
+#[doc(hidden)]
+pub use emitter::{escape_markdown, Alignment, TableFormatter};
+#[doc(hidden)]
+pub use entities::decode_entities;
 
 /// Convert HTML to Markdown using default options.
 ///

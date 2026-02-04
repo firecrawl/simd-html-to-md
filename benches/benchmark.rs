@@ -1,7 +1,7 @@
 //! Benchmarks for HTML to Markdown conversion.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use simd_html_to_md::html_to_md;
+use simd_html_to_md::{decode_entities, escape_markdown, html_to_md, Alignment, TableFormatter};
 
 fn bench_simple_paragraph(c: &mut Criterion) {
     let html = "<p>Hello world, this is a simple paragraph.</p>";
@@ -148,6 +148,50 @@ fn bench_code_blocks(c: &mut Criterion) {
     });
 }
 
+fn bench_escape_markdown(c: &mut Criterion) {
+    let text = "This is **bold** & `code` with [links](url) and <tags>!"
+        .repeat(200);
+
+    c.bench_function("escape_markdown_special", |b| {
+        b.iter(|| escape_markdown(black_box(&text)))
+    });
+}
+
+fn bench_decode_entities_micro(c: &mut Criterion) {
+    let text = "&lt;div&gt; &amp; &quot;quotes&quot; &copy; &reg; &trade; &mdash; &ndash; &nbsp;"
+        .repeat(200);
+
+    c.bench_function("decode_entities_micro", |b| {
+        b.iter(|| decode_entities(black_box(&text)))
+    });
+}
+
+fn bench_table_formatter(c: &mut Criterion) {
+    let mut table = TableFormatter::new();
+    table.set_headers(vec![
+        "Col1".to_string(),
+        "Col2".to_string(),
+        "Col3".to_string(),
+        "Col4".to_string(),
+    ]);
+
+    table.set_alignment(1, Alignment::Center);
+    table.set_alignment(3, Alignment::Right);
+
+    for i in 0..50 {
+        table.add_row(vec![
+            format!("Row {} Col 1", i),
+            format!("Row {} Col 2", i),
+            format!("Row {} Col 3", i),
+            format!("Row {} Col 4", i),
+        ]);
+    }
+
+    c.bench_function("table_formatting_50_rows", |b| {
+        b.iter(|| black_box(table.format()))
+    });
+}
+
 criterion_group!(
     benches,
     bench_simple_paragraph,
@@ -157,5 +201,8 @@ criterion_group!(
     bench_table,
     bench_entities,
     bench_code_blocks,
+    bench_escape_markdown,
+    bench_decode_entities_micro,
+    bench_table_formatter,
 );
 criterion_main!(benches);

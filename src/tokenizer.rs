@@ -33,6 +33,10 @@ pub struct Attribute<'a> {
     pub value: Option<&'a str>,
 }
 
+const TAG_NAME_DELIMS: &[u8] = b" \t\n\r\x0C\x0B";
+const ATTR_NAME_DELIMS: &[u8] = b" \t\n\r\x0C\x0B=/>"; // whitespace + '=' '/' '>'
+const ATTR_VALUE_DELIMS: &[u8] = b" \t\n\r\x0C\x0B/>"; // whitespace + '/' '>'
+
 impl<'a> Tag<'a> {
     /// Get the value of an attribute by name (case-insensitive).
     pub fn get_attr(&self, name: &str) -> Option<&'a str> {
@@ -118,7 +122,7 @@ impl<'a> Tokenizer<'a> {
         if tag_content.len() >= 8
             && tag_content[..8].eq_ignore_ascii_case("!doctype")
         {
-            return Some(Token::Doctype(tag_content[8..].trim()));
+            return Some(Token::Doctype(trim_ascii(&tag_content[8..])));
         }
 
         // Check for CDATA (treat as text)
@@ -128,7 +132,7 @@ impl<'a> Tokenizer<'a> {
 
         // Check for end tag
         if tag_content.starts_with('/') {
-            let name = tag_content[1..].trim();
+            let name = trim_ascii(&tag_content[1..]);
             return Some(Token::EndTag(name));
         }
 
@@ -156,7 +160,21 @@ impl<'a> Tokenizer<'a> {
         self.pos = start + 4; // Skip `<!--`
 
         let remaining = &self.input[self.pos..];
-        if let Some(end_idx) = remaining.find("-->") {
+        let bytes = remaining.as_bytes();
+        let mut search_pos = 0;
+        let end_idx = loop {
+            let rel = match simd::find_char(&bytes[search_pos..], b'-') {
+                Some(rel) => rel,
+                None => break None,
+            };
+            let idx = search_pos + rel;
+            if idx + 2 < bytes.len() && bytes[idx + 1] == b'-' && bytes[idx + 2] == b'>' {
+                break Some(idx);
+            }
+            search_pos = idx + 1;
+        };
+
+        if let Some(end_idx) = end_idx {
             let comment = &remaining[..end_idx];
             self.pos += end_idx + 3;
             Some(Token::Comment(comment))
@@ -173,7 +191,21 @@ impl<'a> Tokenizer<'a> {
         self.pos = start + 9; // Skip `<![CDATA[`
 
         let remaining = &self.input[self.pos..];
-        if let Some(end_idx) = remaining.find("]]>") {
+        let bytes = remaining.as_bytes();
+        let mut search_pos = 0;
+        let end_idx = loop {
+            let rel = match simd::find_char(&bytes[search_pos..], b']') {
+                Some(rel) => rel,
+                None => break None,
+            };
+            let idx = search_pos + rel;
+            if idx + 2 < bytes.len() && bytes[idx + 1] == b']' && bytes[idx + 2] == b'>' {
+                break Some(idx);
+            }
+            search_pos = idx + 1;
+        };
+
+        if let Some(end_idx) = end_idx {
             let content = &remaining[..end_idx];
             self.pos += end_idx + 3;
             Some(Token::Text(content))
@@ -187,7 +219,7 @@ impl<'a> Tokenizer<'a> {
 
     /// Parse the content of a tag into name and attributes.
     fn parse_tag_content(&self, content: &'a str) -> Tag<'a> {
-        let content = content.trim();
+        let content = trim_ascii(content);
         if content.is_empty() {
             return Tag {
                 name: "",
@@ -196,12 +228,11 @@ impl<'a> Tokenizer<'a> {
         }
 
         // Find the tag name (first word)
-        let name_end = content
-            .find(|c: char| c.is_ascii_whitespace())
+        let name_end = simd::find_any_index(content.as_bytes(), TAG_NAME_DELIMS)
             .unwrap_or(content.len());
 
         let name = &content[..name_end];
-        let attrs_str = content[name_end..].trim();
+        let attrs_str = trim_ascii(&content[name_end..]);
 
         let attributes = if attrs_str.is_empty() {
             Vec::new()
@@ -221,21 +252,46 @@ impl<'a> Iterator for Tokenizer<'a> {
     }
 }
 
+fn trim_ascii(input: &str) -> &str {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    &input[start..end]
+}
+
+fn trim_start_ascii(input: &str) -> &str {
+    let bytes = input.as_bytes();
+    let mut start = 0;
+
+    while start < bytes.len() && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+
+    &input[start..]
+}
+
 /// Parse HTML attributes from a string.
 fn parse_attributes(input: &str) -> Vec<Attribute<'_>> {
     let mut attrs = Vec::new();
-    let mut remaining = input.trim();
+    let mut remaining = trim_ascii(input);
 
     while !remaining.is_empty() {
         // Skip whitespace
-        remaining = remaining.trim_start();
+        remaining = trim_start_ascii(remaining);
         if remaining.is_empty() {
             break;
         }
 
         // Find attribute name
-        let name_end = remaining
-            .find(|c: char| c.is_ascii_whitespace() || c == '=' || c == '/' || c == '>')
+        let name_end = simd::find_any_index(remaining.as_bytes(), ATTR_NAME_DELIMS)
             .unwrap_or(remaining.len());
 
         if name_end == 0 {
@@ -245,16 +301,16 @@ fn parse_attributes(input: &str) -> Vec<Attribute<'_>> {
         }
 
         let name = &remaining[..name_end];
-        remaining = &remaining[name_end..].trim_start();
+        remaining = trim_start_ascii(&remaining[name_end..]);
 
         // Check for value
         if remaining.starts_with('=') {
-            remaining = &remaining[1..].trim_start();
+            remaining = trim_start_ascii(&remaining[1..]);
 
             let value = if remaining.starts_with('"') {
                 // Double-quoted value
                 remaining = &remaining[1..];
-                if let Some(end) = remaining.find('"') {
+                if let Some(end) = simd::find_char(remaining.as_bytes(), b'"') {
                     let val = &remaining[..end];
                     remaining = &remaining[end + 1..];
                     Some(val)
@@ -267,7 +323,7 @@ fn parse_attributes(input: &str) -> Vec<Attribute<'_>> {
             } else if remaining.starts_with('\'') {
                 // Single-quoted value
                 remaining = &remaining[1..];
-                if let Some(end) = remaining.find('\'') {
+                if let Some(end) = simd::find_char(remaining.as_bytes(), b'\'') {
                     let val = &remaining[..end];
                     remaining = &remaining[end + 1..];
                     Some(val)
@@ -278,8 +334,7 @@ fn parse_attributes(input: &str) -> Vec<Attribute<'_>> {
                 }
             } else {
                 // Unquoted value
-                let end = remaining
-                    .find(|c: char| c.is_ascii_whitespace() || c == '/' || c == '>')
+                let end = simd::find_any_index(remaining.as_bytes(), ATTR_VALUE_DELIMS)
                     .unwrap_or(remaining.len());
                 let val = &remaining[..end];
                 remaining = &remaining[end..];
@@ -302,23 +357,20 @@ fn parse_attributes(input: &str) -> Vec<Attribute<'_>> {
 
 /// Check if an element is a void element (self-closing by default).
 fn is_void_element(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "area"
-            | "base"
-            | "br"
-            | "col"
-            | "embed"
-            | "hr"
-            | "img"
-            | "input"
-            | "link"
-            | "meta"
-            | "param"
-            | "source"
-            | "track"
-            | "wbr"
-    )
+    name.eq_ignore_ascii_case("area")
+        || name.eq_ignore_ascii_case("base")
+        || name.eq_ignore_ascii_case("br")
+        || name.eq_ignore_ascii_case("col")
+        || name.eq_ignore_ascii_case("embed")
+        || name.eq_ignore_ascii_case("hr")
+        || name.eq_ignore_ascii_case("img")
+        || name.eq_ignore_ascii_case("input")
+        || name.eq_ignore_ascii_case("link")
+        || name.eq_ignore_ascii_case("meta")
+        || name.eq_ignore_ascii_case("param")
+        || name.eq_ignore_ascii_case("source")
+        || name.eq_ignore_ascii_case("track")
+        || name.eq_ignore_ascii_case("wbr")
 }
 
 #[cfg(test)]

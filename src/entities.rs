@@ -1,6 +1,7 @@
 //! HTML entity decoding with SIMD-accelerated ampersand finding.
 
 use crate::simd;
+use std::borrow::Cow;
 
 /// Decode HTML entities in a string.
 ///
@@ -9,11 +10,15 @@ use crate::simd;
 /// - Decimal numeric entities: `&#123;`
 /// - Hexadecimal numeric entities: `&#x7B;`, `&#X7b;`
 pub fn decode_entities(input: &str) -> String {
+    decode_entities_cow(input).into_owned()
+}
+
+pub(crate) fn decode_entities_cow(input: &str) -> Cow<'_, str> {
     let bytes = input.as_bytes();
 
     // Quick check: if no ampersand, return as-is
     if simd::find_amp(bytes).is_none() {
-        return input.to_string();
+        return Cow::Borrowed(input);
     }
 
     let mut result = String::with_capacity(input.len());
@@ -26,12 +31,26 @@ pub fn decode_entities(input: &str) -> String {
             result.push_str(&input[pos..pos + amp_offset]);
             pos += amp_offset;
 
-            // Try to decode the entity
-            if let Some((decoded, len)) = decode_entity(&input[pos..]) {
-                result.push_str(decoded);
-                pos += len;
+            // Try to decode the entity, but only if a semicolon is nearby.
+            let after_amp = pos + 1;
+            let search_end = (after_amp + 33).min(bytes.len());
+            let semi_rel = if after_amp <= bytes.len() {
+                simd::find_char(&bytes[after_amp..search_end], b';')
             } else {
-                // Not a valid entity, copy the ampersand literally
+                None
+            };
+
+            if let Some(semi_rel) = semi_rel {
+                if let Some((decoded, len)) = decode_entity_with_semi(&input[pos..], semi_rel) {
+                    result.push_str(decoded);
+                    pos += len;
+                } else {
+                    // Not a valid entity, copy the ampersand literally
+                    result.push('&');
+                    pos += 1;
+                }
+            } else {
+                // No semicolon nearby, copy the ampersand literally
                 result.push('&');
                 pos += 1;
             }
@@ -42,12 +61,12 @@ pub fn decode_entities(input: &str) -> String {
         }
     }
 
-    result
+    Cow::Owned(result)
 }
 
 /// Try to decode an entity at the start of the input.
 /// Returns `Some((decoded_string, consumed_length))` if successful.
-fn decode_entity(input: &str) -> Option<(&'static str, usize)> {
+fn decode_entity_with_semi(input: &str, semi_pos: usize) -> Option<(&'static str, usize)> {
     if !input.starts_with('&') {
         return None;
     }
@@ -55,8 +74,6 @@ fn decode_entity(input: &str) -> Option<(&'static str, usize)> {
     let input = &input[1..]; // Skip the '&'
 
     // Find the semicolon
-    let semi_pos = input.find(';')?;
-
     // Don't allow extremely long entities
     if semi_pos > 32 {
         return None;

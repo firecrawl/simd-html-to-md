@@ -41,41 +41,35 @@ pub fn find_char(haystack: &[u8], needle: u8) -> Option<usize> {
 #[inline]
 #[allow(dead_code)]
 pub fn find_any(haystack: &[u8], needles: &[u8]) -> Option<(usize, u8)> {
+    let index = find_any_index(haystack, needles)?;
+    Some((index, haystack[index]))
+}
+
+/// Find the first occurrence of any of the given bytes in a slice using SIMD.
+///
+/// Returns `Some(index)` if found, `None` otherwise.
+#[inline]
+pub fn find_any_index(haystack: &[u8], needles: &[u8]) -> Option<usize> {
     if needles.is_empty() {
         return None;
     }
 
-    // For small needle sets, use parallel SIMD comparison
     let chunks = haystack.chunks_exact(LANES);
     let remainder = chunks.remainder();
 
     for (chunk_idx, chunk) in chunks.enumerate() {
         let vec = SimdVec::from_slice(chunk);
-
-        // Check each needle
         let mut combined_mask: u64 = 0;
-        let mut found_masks: Vec<(u64, u8)> = Vec::new();
 
         for &needle in needles {
             let needle_vec = SimdVec::splat(needle);
             let mask = vec.simd_eq(needle_vec).to_bitmask() as u64;
-            if mask != 0 {
-                found_masks.push((mask, needle));
-                combined_mask |= mask;
-            }
+            combined_mask |= mask;
         }
 
         if combined_mask != 0 {
-            // Find the first match
             let first_pos = combined_mask.trailing_zeros() as usize;
-            let bit = 1u64 << first_pos;
-
-            // Find which needle matched at this position
-            for (mask, needle) in found_masks {
-                if mask & bit != 0 {
-                    return Some((chunk_idx * LANES + first_pos, needle));
-                }
-            }
+            return Some(chunk_idx * LANES + first_pos);
         }
     }
 
@@ -84,7 +78,7 @@ pub fn find_any(haystack: &[u8], needles: &[u8]) -> Option<(usize, u8)> {
     for (i, &b) in remainder.iter().enumerate() {
         for &needle in needles {
             if b == needle {
-                return Some((base + i, needle));
+                return Some(base + i);
             }
         }
     }
@@ -144,6 +138,13 @@ mod tests {
         assert_eq!(find_any(b"hello <world>", &[b'<', b'>']), Some((6, b'<')));
         assert_eq!(find_any(b"hello world>", &[b'<', b'>']), Some((11, b'>')));
         assert_eq!(find_any(b"hello world", &[b'<', b'>']), None);
+    }
+
+    #[test]
+    fn test_find_any_index() {
+        assert_eq!(find_any_index(b"hello <world>", &[b'<', b'>']), Some(6));
+        assert_eq!(find_any_index(b"hello world>", &[b'<', b'>']), Some(11));
+        assert_eq!(find_any_index(b"hello world", &[b'<', b'>']), None);
     }
 
     #[test]

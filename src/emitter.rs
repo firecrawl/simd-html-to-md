@@ -1,5 +1,8 @@
 //! Markdown output emitter with proper formatting.
 
+use crate::simd;
+use std::borrow::Cow;
+
 /// Escape special Markdown characters in text content.
 ///
 /// This prevents text from being interpreted as Markdown formatting.
@@ -7,6 +10,12 @@
 /// but we escape them everywhere for safety. Consider context-aware
 /// escaping for better output.
 pub fn escape_markdown(text: &str) -> String {
+    escape_markdown_cow(text).into_owned()
+}
+
+pub(crate) fn escape_markdown_cow(text: &str) -> Cow<'_, str> {
+    const ESCAPE_SIMD_THRESHOLD: usize = 64;
+
     // Characters that definitely need escaping in Markdown:
     // \ ` * _ { } [ ] ( ) # ! | & < >
     // Characters that only need escaping at line start: + - .
@@ -15,32 +24,76 @@ pub fn escape_markdown(text: &str) -> String {
 
     // Quick check: scan for any special characters
     let special = b"\\`*_{}[]()#!|<>&";
-    let mut needs_escape = false;
-    for &b in bytes {
-        if special.contains(&b) {
-            needs_escape = true;
-            break;
-        }
-    }
+    let first_special = if bytes.len() >= ESCAPE_SIMD_THRESHOLD {
+        simd::find_any_index(bytes, special)
+    } else {
+        find_first_special_scalar(bytes)
+    };
 
-    if !needs_escape {
-        return text.to_string();
-    }
+    let first_special = match first_special {
+        Some(pos) => pos,
+        None => return Cow::Borrowed(text),
+    };
 
     let mut result = String::with_capacity(text.len() + text.len() / 4);
+    let mut last = 0;
+    let mut pos = first_special;
 
-    for c in text.chars() {
-        match c {
-            '\\' | '`' | '*' | '_' | '{' | '}' | '[' | ']' | '(' | ')' | '#'
-            | '!' | '|' | '<' | '>' | '&' => {
-                result.push('\\');
-                result.push(c);
+    loop {
+        if pos > last {
+            result.push_str(&text[last..pos]);
+        }
+        result.push('\\');
+        result.push(bytes[pos] as char);
+
+        last = pos + 1;
+        if last >= bytes.len() {
+            break;
+        }
+
+        let next_rel = if bytes.len() - last >= ESCAPE_SIMD_THRESHOLD {
+            simd::find_any_index(&bytes[last..], special)
+        } else {
+            find_first_special_scalar(&bytes[last..])
+        };
+
+        match next_rel {
+            Some(rel) => pos = last + rel,
+            None => {
+                result.push_str(&text[last..]);
+                break;
             }
-            _ => result.push(c),
         }
     }
 
-    result
+    Cow::Owned(result)
+}
+
+fn find_first_special_scalar(bytes: &[u8]) -> Option<usize> {
+    for (i, &b) in bytes.iter().enumerate() {
+        if matches!(
+            b,
+            b'\\'
+                | b'`'
+                | b'*'
+                | b'_'
+                | b'{'
+                | b'}'
+                | b'['
+                | b']'
+                | b'('
+                | b')'
+                | b'#'
+                | b'!'
+                | b'|'
+                | b'<'
+                | b'>'
+                | b'&'
+        ) {
+            return Some(i);
+        }
+    }
+    None
 }
 
 /// Escape text for use inside a code span (backticks).
@@ -69,8 +122,8 @@ fn count_max_consecutive_backticks(text: &str) -> usize {
     let mut max = 0;
     let mut current = 0;
 
-    for c in text.chars() {
-        if c == '`' {
+    for &b in text.as_bytes() {
+        if b == b'`' {
             current += 1;
             max = max.max(current);
         } else {
@@ -83,33 +136,67 @@ fn count_max_consecutive_backticks(text: &str) -> usize {
 
 /// Format a heading with ATX style.
 pub fn format_heading(level: u8, text: &str) -> String {
-    let level = level.clamp(1, 6);
-    let hashes = "#".repeat(level as usize);
-    format!("{} {}", hashes, text.trim())
+    let level = level.clamp(1, 6) as usize;
+    let text = text.trim();
+    let mut result = String::with_capacity(level + 1 + text.len());
+    for _ in 0..level {
+        result.push('#');
+    }
+    result.push(' ');
+    result.push_str(text);
+    result
 }
 
 /// Format a link.
 pub fn format_link(text: &str, url: &str, title: Option<&str>) -> String {
-    match title {
-        Some(t) => format!("[{}]({} \"{}\")", text, url, t),
-        None => format!("[{}]({})", text, url),
+    let title_len = title.map_or(0, |t| t.len() + 3);
+    let mut result = String::with_capacity(text.len() + url.len() + title_len + 4);
+    result.push('[');
+    result.push_str(text);
+    result.push_str("](");
+    result.push_str(url);
+    if let Some(t) = title {
+        result.push(' ');
+        result.push('"');
+        result.push_str(t);
+        result.push('"');
     }
+    result.push(')');
+    result
 }
 
 /// Format an image.
 pub fn format_image(alt: &str, src: &str, title: Option<&str>) -> String {
-    match title {
-        Some(t) => format!("![{}]({} \"{}\")", alt, src, t),
-        None => format!("![{}]({})", alt, src),
+    let title_len = title.map_or(0, |t| t.len() + 3);
+    let mut result = String::with_capacity(alt.len() + src.len() + title_len + 5);
+    result.push('!');
+    result.push('[');
+    result.push_str(alt);
+    result.push_str("](");
+    result.push_str(src);
+    if let Some(t) = title {
+        result.push(' ');
+        result.push('"');
+        result.push_str(t);
+        result.push('"');
     }
+    result.push(')');
+    result
 }
 
 /// Format a code block with optional language.
 pub fn format_code_block(code: &str, language: Option<&str>) -> String {
     let fence = determine_fence(code);
     let lang = language.unwrap_or("");
-
-    format!("{}{}\n{}\n{}", fence, lang, code.trim_end(), fence)
+    let code = code.trim_end();
+    let mut result = String::with_capacity(fence.len() * 2 + lang.len() + code.len() + 2);
+    result.push_str(fence);
+    result.push_str(lang);
+    result.push('\n');
+    result.push_str(code);
+    result.push('\n');
+    result.push_str(fence);
+    result
 }
 
 /// Determine the fence characters to use for a code block.
@@ -139,22 +226,30 @@ pub fn format_blockquote(text: &str) -> String {
 
 /// Format an unordered list item.
 pub fn format_unordered_item(text: &str, indent: usize, bullet: char) -> String {
-    let prefix = " ".repeat(indent);
     let text = text.trim();
 
     // Handle multiline items
     let mut lines = text.lines();
     let first = lines.next().unwrap_or("");
-    let mut result = format!("{}{} {}", prefix, bullet, first);
+
+    let mut result = String::with_capacity(text.len() + indent + 2);
+    for _ in 0..indent {
+        result.push(' ');
+    }
+    result.push(bullet);
+    result.push(' ');
+    result.push_str(first);
 
     // Continuation lines need extra indent
-    let continuation_prefix = " ".repeat(indent + 2);
+    let continuation_indent = indent + 2;
     for line in lines {
         result.push('\n');
         if line.is_empty() {
             // Keep empty lines but don't add trailing spaces
         } else {
-            result.push_str(&continuation_prefix);
+            for _ in 0..continuation_indent {
+                result.push(' ');
+            }
             result.push_str(line);
         }
     }
@@ -164,22 +259,31 @@ pub fn format_unordered_item(text: &str, indent: usize, bullet: char) -> String 
 
 /// Format an ordered list item.
 pub fn format_ordered_item(text: &str, number: usize, indent: usize) -> String {
-    let prefix = " ".repeat(indent);
     let text = text.trim();
-    let marker = format!("{}.", number);
-    let marker_len = marker.len();
+    let marker = number.to_string();
+    let marker_len = marker.len() + 1;
 
     // Handle multiline items
     let mut lines = text.lines();
     let first = lines.next().unwrap_or("");
-    let mut result = format!("{}{} {}", prefix, marker, first);
+
+    let mut result = String::with_capacity(text.len() + indent + marker_len + 2);
+    for _ in 0..indent {
+        result.push(' ');
+    }
+    result.push_str(&marker);
+    result.push('.');
+    result.push(' ');
+    result.push_str(first);
 
     // Continuation lines need to align with content after the marker
-    let continuation_prefix = " ".repeat(indent + marker_len + 1);
+    let continuation_indent = indent + marker_len + 1;
     for line in lines {
         result.push('\n');
         if !line.is_empty() {
-            result.push_str(&continuation_prefix);
+            for _ in 0..continuation_indent {
+                result.push(' ');
+            }
             result.push_str(line);
         }
     }
@@ -199,24 +303,43 @@ pub fn format_br() -> &'static str {
 
 /// Format strong emphasis.
 pub fn format_strong(text: &str) -> String {
-    format!("**{}**", text)
+    let mut result = String::with_capacity(text.len() + 4);
+    result.push_str("**");
+    result.push_str(text);
+    result.push_str("**");
+    result
 }
 
 /// Format emphasis.
 pub fn format_emphasis(text: &str) -> String {
-    format!("*{}*", text)
+    let mut result = String::with_capacity(text.len() + 2);
+    result.push('*');
+    result.push_str(text);
+    result.push('*');
+    result
 }
 
 /// Format strikethrough (GFM).
 pub fn format_strikethrough(text: &str) -> String {
-    format!("~~{}~~", text)
+    let mut result = String::with_capacity(text.len() + 4);
+    result.push_str("~~");
+    result.push_str(text);
+    result.push_str("~~");
+    result
 }
 
 /// Format inline code.
 pub fn format_code(text: &str) -> String {
     let (escaped, wrapper_count) = escape_code_span(text);
-    let backticks = "`".repeat(wrapper_count);
-    format!("{}{}{}", backticks, escaped, backticks)
+    let mut result = String::with_capacity(escaped.len() + wrapper_count * 2);
+    for _ in 0..wrapper_count {
+        result.push('`');
+    }
+    result.push_str(&escaped);
+    for _ in 0..wrapper_count {
+        result.push('`');
+    }
+    result
 }
 
 /// A table formatter for GFM tables.
@@ -234,6 +357,48 @@ pub enum Alignment {
     Left,
     Center,
     Right,
+}
+
+fn append_table_cell(result: &mut String, text: &str, width: usize) {
+    result.push(' ');
+    result.push_str(text);
+    let pad = width.saturating_sub(text.len());
+    for _ in 0..pad {
+        result.push(' ');
+    }
+    result.push(' ');
+    result.push('|');
+}
+
+fn append_table_separator_cell(result: &mut String, width: usize, alignment: Alignment) {
+    result.push(' ');
+    match alignment {
+        Alignment::Left => {
+            result.push(':');
+            for _ in 1..width {
+                result.push('-');
+            }
+        }
+        Alignment::Center => {
+            result.push(':');
+            if width > 2 {
+                for _ in 0..(width - 2) {
+                    result.push('-');
+                }
+            }
+            result.push(':');
+        }
+        Alignment::Right => {
+            if width > 1 {
+                for _ in 0..(width - 1) {
+                    result.push('-');
+                }
+            }
+            result.push(':');
+        }
+    }
+    result.push(' ');
+    result.push('|');
 }
 
 impl TableFormatter {
@@ -281,13 +446,17 @@ impl TableFormatter {
             }
         }
 
-        let mut result = String::new();
+        let total_width: usize = widths.iter().sum();
+        let cols = widths.len();
+        let row_len = 1 + total_width + (3 * cols);
+        let total_rows = 2 + self.rows.len();
+        let mut result = String::with_capacity(total_rows * (row_len + 1));
 
         // Header row
         result.push('|');
         for (i, header) in self.headers.iter().enumerate() {
             let width = widths.get(i).copied().unwrap_or(3);
-            result.push_str(&format!(" {:width$} |", header, width = width));
+            append_table_cell(&mut result, header, width);
         }
         result.push('\n');
 
@@ -295,12 +464,7 @@ impl TableFormatter {
         result.push('|');
         for (i, &alignment) in self.alignments.iter().enumerate() {
             let width = widths.get(i).copied().unwrap_or(3);
-            let sep = match alignment {
-                Alignment::Left => format!(":{}", "-".repeat(width - 1)),
-                Alignment::Center => format!(":{}:", "-".repeat(width - 2)),
-                Alignment::Right => format!("{}:", "-".repeat(width - 1)),
-            };
-            result.push_str(&format!(" {} |", sep));
+            append_table_separator_cell(&mut result, width, alignment);
         }
         result.push('\n');
 
@@ -309,7 +473,7 @@ impl TableFormatter {
             result.push('|');
             for (i, cell) in row.iter().enumerate() {
                 let width = widths.get(i).copied().unwrap_or(3);
-                result.push_str(&format!(" {:width$} |", cell, width = width));
+                append_table_cell(&mut result, cell, width);
             }
             result.push('\n');
         }
@@ -327,8 +491,29 @@ impl Default for TableFormatter {
     }
 }
 
+fn is_ascii_whitespace_byte(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\x0C' | b'\x0B')
+}
+
 /// Normalize whitespace in text (collapse multiple spaces/newlines).
 pub fn normalize_whitespace(text: &str) -> String {
+    if text.is_ascii() {
+        let mut result = String::with_capacity(text.len());
+        let mut last_was_space = false;
+        for &b in text.as_bytes() {
+            if is_ascii_whitespace_byte(b) {
+                if !last_was_space {
+                    result.push(' ');
+                    last_was_space = true;
+                }
+            } else {
+                result.push(b as char);
+                last_was_space = false;
+            }
+        }
+        return result;
+    }
+
     let mut result = String::with_capacity(text.len());
     let mut last_was_space = false;
 
@@ -349,17 +534,67 @@ pub fn normalize_whitespace(text: &str) -> String {
 
 /// Trim leading/trailing whitespace and collapse internal whitespace.
 /// Preserves Markdown line breaks (`  \n`).
+#[allow(dead_code)]
 pub fn clean_text(text: &str) -> String {
-    let text = text.trim();
+    clean_text_cow(text).into_owned()
+}
 
+pub(crate) fn clean_text_cow(text: &str) -> Cow<'_, str> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Cow::Borrowed("");
+    }
+
+    if is_normalized_whitespace(trimmed) {
+        return Cow::Borrowed(trimmed);
+    }
+
+    Cow::Owned(clean_text_owned(trimmed))
+}
+
+fn clean_text_owned(text: &str) -> String {
     // Check if there are any line break markers
     if !text.contains("  \n") {
         return normalize_whitespace(text);
     }
 
     // Preserve `  \n` sequences
+    if text.is_ascii() {
+        let mut result = String::with_capacity(text.len());
+        let mut space_count = 0;
+
+        for &b in text.as_bytes() {
+            if b == b' ' {
+                space_count += 1;
+            } else if b == b'\n' {
+                if space_count >= 2 {
+                    // This is a Markdown line break
+                    result.push_str("  \n");
+                } else if space_count > 0 || !result.is_empty() {
+                    // Regular whitespace
+                    if !result.ends_with(' ') && !result.ends_with('\n') {
+                        result.push(' ');
+                    }
+                }
+                space_count = 0;
+            } else {
+                if space_count > 0
+                    && !result.is_empty()
+                    && !result.ends_with(' ')
+                    && !result.ends_with('\n')
+                {
+                    result.push(' ');
+                }
+                space_count = 0;
+                result.push(b as char);
+            }
+        }
+
+        return result;
+    }
+
     let mut result = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
+    let mut chars = text.chars();
     let mut space_count = 0;
 
     while let Some(c) = chars.next() {
@@ -386,6 +621,28 @@ pub fn clean_text(text: &str) -> String {
     }
 
     result
+}
+
+fn is_normalized_whitespace(text: &str) -> bool {
+    if !text.is_ascii() {
+        return false;
+    }
+
+    let mut prev_space = false;
+    for &b in text.as_bytes() {
+        if b == b' ' {
+            if prev_space {
+                return false;
+            }
+            prev_space = true;
+        } else if matches!(b, b'\t' | b'\n' | b'\r' | b'\x0C' | b'\x0B') {
+            return false;
+        } else {
+            prev_space = false;
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]
