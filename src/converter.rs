@@ -2,11 +2,12 @@
 
 use crate::emitter::{
     clean_text_cow, escape_markdown_cow, format_br, format_code,
-    format_code_block, format_emphasis, format_heading, format_hr, format_image, format_link,
-    format_ordered_item, format_strikethrough, format_strong, format_unordered_item, Alignment,
+    format_code_block, format_heading, format_hr, format_image, format_link,
+    format_ordered_item, format_unordered_item, Alignment,
     TableFormatter,
 };
 use crate::entities::decode_entities_cow;
+use crate::simd;
 use crate::tokenizer::{Tag, Token, Tokenizer};
 use std::borrow::Cow;
 
@@ -40,7 +41,7 @@ enum ListType {
 
 /// Context for tracking state during conversion.
 #[derive(Debug)]
-struct Context {
+struct Context<'a> {
     /// Stack of list types (for nesting).
     list_stack: Vec<ListType>,
     /// Blockquote depth.
@@ -49,18 +50,20 @@ struct Context {
     in_code_block: bool,
     /// Whether we're in inline code.
     in_code: bool,
+    /// Accumulated inline code content.
+    inline_code_content: String,
     /// Whether we're in a preformatted section.
     in_pre: bool,
     /// Code block language (from class attribute).
-    code_language: Option<String>,
+    code_language: Option<&'a str>,
     /// Accumulated code block content.
     code_content: String,
     /// Stack of inline formatting.
-    inline_stack: Vec<InlineFormat>,
+    inline_stack: Vec<InlineState>,
     /// Link URL being built.
-    link_url: Option<String>,
+    link_url: Option<&'a str>,
     /// Link title being built.
-    link_title: Option<String>,
+    link_title: Option<&'a str>,
     /// Link text being accumulated.
     link_text: String,
     /// Whether we're in a link.
@@ -90,7 +93,54 @@ enum InlineFormat {
     Strong,
     Emphasis,
     Strikethrough,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct InlineState {
+    kind: InlineFormat,
+    opened: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TagKind {
+    H1,
+    H2,
+    H3,
+    H4,
+    H5,
+    H6,
+    P,
+    Strong,
+    Emphasis,
+    Strikethrough,
     Code,
+    Pre,
+    A,
+    Ul,
+    Ol,
+    Li,
+    Blockquote,
+    Table,
+    Thead,
+    Tbody,
+    Tfoot,
+    Tr,
+    Th,
+    Td,
+    Div,
+    Span,
+    Section,
+    Article,
+    Header,
+    Footer,
+    Main,
+    Aside,
+    Nav,
+    Br,
+    Hr,
+    Img,
+    Input,
+    Unknown,
 }
 
 #[derive(Debug)]
@@ -103,7 +153,7 @@ struct TableState {
     formatter: TableFormatter,
 }
 
-impl Context {
+impl<'a> Context<'a> {
     fn with_capacity(output_capacity: usize) -> Self {
         Self {
             list_stack: Vec::new(),
@@ -113,6 +163,7 @@ impl Context {
             in_pre: false,
             code_language: None,
             code_content: String::new(),
+            inline_code_content: String::new(),
             inline_stack: Vec::new(),
             link_url: None,
             link_title: None,
@@ -229,7 +280,7 @@ pub fn convert(html: &str, options: &Options) -> String {
 }
 
 /// Process a single token.
-fn process_token(ctx: &mut Context, token: Token<'_>, options: &Options) {
+fn process_token<'a>(ctx: &mut Context<'a>, token: Token<'a>, options: &Options) {
     match token {
         Token::StartTag(tag) => process_start_tag(ctx, &tag, options),
         Token::EndTag(name) => process_end_tag(ctx, name, options),
@@ -241,79 +292,84 @@ fn process_token(ctx: &mut Context, token: Token<'_>, options: &Options) {
 }
 
 /// Process a start tag.
-fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
-    match tag.name {
+fn process_start_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>, options: &Options) {
+    match tag_kind(tag.name) {
         // Headings
-        name if name.eq_ignore_ascii_case("h1") => {
+        TagKind::H1 => {
             ctx.heading_level = 1;
             ctx.heading_text.clear();
         }
-        name if name.eq_ignore_ascii_case("h2") => {
+        TagKind::H2 => {
             ctx.heading_level = 2;
             ctx.heading_text.clear();
         }
-        name if name.eq_ignore_ascii_case("h3") => {
+        TagKind::H3 => {
             ctx.heading_level = 3;
             ctx.heading_text.clear();
         }
-        name if name.eq_ignore_ascii_case("h4") => {
+        TagKind::H4 => {
             ctx.heading_level = 4;
             ctx.heading_text.clear();
         }
-        name if name.eq_ignore_ascii_case("h5") => {
+        TagKind::H5 => {
             ctx.heading_level = 5;
             ctx.heading_text.clear();
         }
-        name if name.eq_ignore_ascii_case("h6") => {
+        TagKind::H6 => {
             ctx.heading_level = 6;
             ctx.heading_text.clear();
         }
 
         // Paragraph
-        name if name.eq_ignore_ascii_case("p") => {
+        TagKind::P => {
             ctx.in_paragraph = true;
             ctx.pending_text.clear();
         }
 
         // Emphasis
-        name if name.eq_ignore_ascii_case("strong") || name.eq_ignore_ascii_case("b") => {
-            ctx.inline_stack.push(InlineFormat::Strong);
+        TagKind::Strong => {
+            ctx.inline_stack.push(InlineState {
+                kind: InlineFormat::Strong,
+                opened: false,
+            });
         }
-        name if name.eq_ignore_ascii_case("em") || name.eq_ignore_ascii_case("i") => {
-            ctx.inline_stack.push(InlineFormat::Emphasis);
+        TagKind::Emphasis => {
+            ctx.inline_stack.push(InlineState {
+                kind: InlineFormat::Emphasis,
+                opened: false,
+            });
         }
-        name
-            if name.eq_ignore_ascii_case("del")
-                || name.eq_ignore_ascii_case("s")
-                || name.eq_ignore_ascii_case("strike") =>
-        {
-            ctx.inline_stack.push(InlineFormat::Strikethrough);
+        TagKind::Strikethrough => {
+            ctx.inline_stack.push(InlineState {
+                kind: InlineFormat::Strikethrough,
+                opened: false,
+            });
         }
 
         // Code
-        name if name.eq_ignore_ascii_case("code") => {
+        TagKind::Code => {
             if ctx.in_pre {
                 // Part of a code block - extract language from class
                 if let Some(class) = tag.get_attr("class") {
                     // Look for language-* or lang-* class
                     for part in class.split_whitespace() {
                         if let Some(lang) = part.strip_prefix("language-") {
-                            ctx.code_language = Some(lang.to_string());
+                            ctx.code_language = Some(lang);
                             break;
                         } else if let Some(lang) = part.strip_prefix("lang-") {
-                            ctx.code_language = Some(lang.to_string());
+                            ctx.code_language = Some(lang);
                             break;
                         }
                     }
                 }
             } else {
                 ctx.in_code = true;
-                ctx.inline_stack.push(InlineFormat::Code);
+                ctx.inline_code_content.clear();
             }
         }
 
         // Preformatted / code blocks
-        name if name.eq_ignore_ascii_case("pre") => {
+        TagKind::Pre => {
             ctx.in_pre = true;
             ctx.in_code_block = true;
             ctx.code_content.clear();
@@ -321,22 +377,25 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
         }
 
         // Links
-        name if name.eq_ignore_ascii_case("a") => {
+        TagKind::A => {
+            if !ctx.in_link && !ctx.inline_stack.is_empty() {
+                open_inline_markers(ctx);
+            }
             ctx.in_link = true;
-            ctx.link_url = tag.get_attr("href").map(|s| s.to_string());
-            ctx.link_title = tag.get_attr("title").map(|s| s.to_string());
+            ctx.link_url = tag.get_attr("href");
+            ctx.link_title = tag.get_attr("title");
             ctx.link_text.clear();
         }
 
         // Lists
-        name if name.eq_ignore_ascii_case("ul") => {
+        TagKind::Ul => {
             // If we're in a list item, emit the current content before starting nested list
             if !ctx.list_item_stack.is_empty() {
                 flush_current_list_item(ctx, options);
             }
             ctx.list_stack.push(ListType::Unordered);
         }
-        name if name.eq_ignore_ascii_case("ol") => {
+        TagKind::Ol => {
             // If we're in a list item, emit the current content before starting nested list
             if !ctx.list_item_stack.is_empty() {
                 flush_current_list_item(ctx, options);
@@ -347,17 +406,17 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
                 .unwrap_or(1);
             ctx.list_stack.push(ListType::Ordered(start));
         }
-        name if name.eq_ignore_ascii_case("li") => {
+        TagKind::Li => {
             ctx.list_item_stack.push(String::new());
         }
 
         // Blockquote
-        name if name.eq_ignore_ascii_case("blockquote") => {
+        TagKind::Blockquote => {
             ctx.blockquote_depth += 1;
         }
 
         // Table
-        name if name.eq_ignore_ascii_case("table") => {
+        TagKind::Table => {
             ctx.table = Some(TableState {
                 in_header: false,
                 in_row: false,
@@ -367,23 +426,23 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
                 formatter: TableFormatter::new(),
             });
         }
-        name if name.eq_ignore_ascii_case("thead") => {
+        TagKind::Thead => {
             if let Some(ref mut table) = ctx.table {
                 table.in_header = true;
             }
         }
-        name if name.eq_ignore_ascii_case("tbody") || name.eq_ignore_ascii_case("tfoot") => {
+        TagKind::Tbody | TagKind::Tfoot => {
             if let Some(ref mut table) = ctx.table {
                 table.in_header = false;
             }
         }
-        name if name.eq_ignore_ascii_case("tr") => {
+        TagKind::Tr => {
             if let Some(ref mut table) = ctx.table {
                 table.in_row = true;
                 table.current_row.clear();
             }
         }
-        name if name.eq_ignore_ascii_case("th") || name.eq_ignore_ascii_case("td") => {
+        TagKind::Th | TagKind::Td => {
             if let Some(ref mut table) = ctx.table {
                 table.in_cell = true;
                 table.cell_content.clear();
@@ -404,17 +463,15 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
         }
 
         // Div/span - just containers, process content
-        name
-            if name.eq_ignore_ascii_case("div")
-                || name.eq_ignore_ascii_case("span")
-                || name.eq_ignore_ascii_case("section")
-                || name.eq_ignore_ascii_case("article")
-                || name.eq_ignore_ascii_case("header")
-                || name.eq_ignore_ascii_case("footer")
-                || name.eq_ignore_ascii_case("main")
-                || name.eq_ignore_ascii_case("aside")
-                || name.eq_ignore_ascii_case("nav") =>
-        {
+        TagKind::Div
+        | TagKind::Span
+        | TagKind::Section
+        | TagKind::Article
+        | TagKind::Header
+        | TagKind::Footer
+        | TagKind::Main
+        | TagKind::Aside
+        | TagKind::Nav => {
             // These are just containers, no special handling
         }
 
@@ -425,17 +482,10 @@ fn process_start_tag(ctx: &mut Context, tag: &Tag<'_>, options: &Options) {
 }
 
 /// Process an end tag.
-fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
-    match name {
+fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
+    match tag_kind(name) {
         // Headings
-        name
-            if name.eq_ignore_ascii_case("h1")
-                || name.eq_ignore_ascii_case("h2")
-                || name.eq_ignore_ascii_case("h3")
-                || name.eq_ignore_ascii_case("h4")
-                || name.eq_ignore_ascii_case("h5")
-                || name.eq_ignore_ascii_case("h6") =>
-        {
+        TagKind::H1 | TagKind::H2 | TagKind::H3 | TagKind::H4 | TagKind::H5 | TagKind::H6 => {
             if ctx.heading_level > 0 {
                 let mut heading_text = std::mem::take(&mut ctx.heading_text);
                 let text = clean_text_cow(&heading_text);
@@ -450,7 +500,7 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
         }
 
         // Paragraph
-        name if name.eq_ignore_ascii_case("p") => {
+        TagKind::P => {
             if ctx.in_paragraph {
                 let mut pending = std::mem::take(&mut ctx.pending_text);
                 let text = clean_text_cow(&pending);
@@ -464,40 +514,53 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
         }
 
         // Emphasis
-        name if name.eq_ignore_ascii_case("strong") || name.eq_ignore_ascii_case("b") => {
-            if let Some(InlineFormat::Strong) = ctx.inline_stack.last() {
-                ctx.inline_stack.pop();
+        TagKind::Strong => {
+            if let Some(state) = ctx.inline_stack.last() {
+                if state.kind == InlineFormat::Strong {
+                    let state = ctx.inline_stack.pop().unwrap();
+                    if state.opened {
+                        emit_inline_marker(ctx, InlineFormat::Strong);
+                    }
+                }
             }
         }
-        name if name.eq_ignore_ascii_case("em") || name.eq_ignore_ascii_case("i") => {
-            if let Some(InlineFormat::Emphasis) = ctx.inline_stack.last() {
-                ctx.inline_stack.pop();
+        TagKind::Emphasis => {
+            if let Some(state) = ctx.inline_stack.last() {
+                if state.kind == InlineFormat::Emphasis {
+                    let state = ctx.inline_stack.pop().unwrap();
+                    if state.opened {
+                        emit_inline_marker(ctx, InlineFormat::Emphasis);
+                    }
+                }
             }
         }
-        name
-            if name.eq_ignore_ascii_case("del")
-                || name.eq_ignore_ascii_case("s")
-                || name.eq_ignore_ascii_case("strike") =>
-        {
-            if let Some(InlineFormat::Strikethrough) = ctx.inline_stack.last() {
-                ctx.inline_stack.pop();
+        TagKind::Strikethrough => {
+            if let Some(state) = ctx.inline_stack.last() {
+                if state.kind == InlineFormat::Strikethrough {
+                    let state = ctx.inline_stack.pop().unwrap();
+                    if state.opened {
+                        emit_inline_marker(ctx, InlineFormat::Strikethrough);
+                    }
+                }
             }
         }
 
         // Code
-        name if name.eq_ignore_ascii_case("code") => {
+        TagKind::Code => {
             if !ctx.in_pre {
-                if let Some(InlineFormat::Code) = ctx.inline_stack.last() {
-                    ctx.inline_stack.pop();
+                if ctx.in_code {
+                    let code = format_code(&ctx.inline_code_content);
+                    emit_text_to_context(ctx, Cow::Owned(code), false);
+                    ctx.inline_code_content.clear();
                 }
                 ctx.in_code = false;
             }
         }
 
         // Preformatted / code blocks
-        name if name.eq_ignore_ascii_case("pre") => {
+        TagKind::Pre => {
             if ctx.in_code_block {
-                let code = format_code_block(&ctx.code_content, ctx.code_language.as_deref());
+                let code = format_code_block(&ctx.code_content, ctx.code_language);
                 ctx.emit_block(&code);
                 ctx.in_code_block = false;
                 ctx.in_pre = false;
@@ -507,18 +570,14 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
         }
 
         // Links
-        name if name.eq_ignore_ascii_case("a") => {
+        TagKind::A => {
             if ctx.in_link {
-                let url = ctx.link_url.take().unwrap_or_default();
+                let url = ctx.link_url.take().unwrap_or("");
                 let title = ctx.link_title.take();
                 let link = {
                     let text = clean_text_cow(&ctx.link_text);
-                    let link_text = if text.is_empty() {
-                        url.as_str()
-                    } else {
-                        text.as_ref()
-                    };
-                    format_link(link_text, &url, title.as_deref())
+                    let link_text = if text.is_empty() { url } else { text.as_ref() };
+                    format_link(link_text, url, title)
                 };
                 ctx.in_link = false;
                 ctx.link_text.clear();
@@ -528,7 +587,7 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
         }
 
         // Lists
-        name if name.eq_ignore_ascii_case("ul") || name.eq_ignore_ascii_case("ol") => {
+        TagKind::Ul | TagKind::Ol => {
             ctx.list_stack.pop();
             if ctx.list_stack.is_empty() {
                 // End of outermost list
@@ -542,7 +601,7 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
                 }
             }
         }
-        name if name.eq_ignore_ascii_case("li") => {
+        TagKind::Li => {
             if let Some(item_content) = ctx.list_item_stack.pop() {
                 let content = clean_text_cow(&item_content);
                 // Only emit if there's content (might be empty if already flushed for nested list)
@@ -572,14 +631,14 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
         }
 
         // Blockquote
-        name if name.eq_ignore_ascii_case("blockquote") => {
+        TagKind::Blockquote => {
             if ctx.blockquote_depth > 0 {
                 ctx.blockquote_depth -= 1;
             }
         }
 
         // Table
-        name if name.eq_ignore_ascii_case("table") => {
+        TagKind::Table => {
             if let Some(table) = ctx.table.take() {
                 let formatted = table.formatter.format();
                 if !formatted.is_empty() {
@@ -587,12 +646,12 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
                 }
             }
         }
-        name if name.eq_ignore_ascii_case("thead") => {
+        TagKind::Thead => {
             if let Some(ref mut table) = ctx.table {
                 table.in_header = false;
             }
         }
-        name if name.eq_ignore_ascii_case("tr") => {
+        TagKind::Tr => {
             if let Some(ref mut table) = ctx.table {
                 if table.in_row {
                     if table.in_header {
@@ -605,7 +664,7 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
                 }
             }
         }
-        name if name.eq_ignore_ascii_case("th") || name.eq_ignore_ascii_case("td") => {
+        TagKind::Th | TagKind::Td => {
             if let Some(ref mut table) = ctx.table {
                 if table.in_cell {
                     table
@@ -622,10 +681,10 @@ fn process_end_tag(ctx: &mut Context, name: &str, options: &Options) {
 }
 
 /// Process a self-closing tag.
-fn process_self_closing_tag(ctx: &mut Context, tag: &Tag<'_>) {
-    match tag.name {
+fn process_self_closing_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>) {
+    match tag_kind(tag.name) {
         // Line break
-        name if name.eq_ignore_ascii_case("br") => {
+        TagKind::Br => {
             if ctx.in_code_block {
                 ctx.code_content.push('\n');
             } else if let Some(content) = ctx.current_list_item() {
@@ -640,12 +699,12 @@ fn process_self_closing_tag(ctx: &mut Context, tag: &Tag<'_>) {
         }
 
         // Horizontal rule
-        name if name.eq_ignore_ascii_case("hr") => {
+        TagKind::Hr => {
             ctx.emit_block(format_hr());
         }
 
         // Image
-        name if name.eq_ignore_ascii_case("img") => {
+        TagKind::Img => {
             let src = tag.get_attr("src").unwrap_or("");
             let alt = tag.get_attr("alt").unwrap_or("");
             let title = tag.get_attr("title");
@@ -655,7 +714,7 @@ fn process_self_closing_tag(ctx: &mut Context, tag: &Tag<'_>) {
         }
 
         // Input (for checkboxes in task lists)
-        name if name.eq_ignore_ascii_case("input") => {
+        TagKind::Input => {
             if tag.get_attr("type") == Some("checkbox") {
                 let checked = tag
                     .attributes
@@ -671,7 +730,7 @@ fn process_self_closing_tag(ctx: &mut Context, tag: &Tag<'_>) {
 }
 
 /// Process text content.
-fn process_text(ctx: &mut Context, text: &str) {
+fn process_text<'a>(ctx: &mut Context<'a>, text: &'a str) {
     if !ctx.in_code_block
         && !ctx.in_paragraph
         && !ctx.in_link
@@ -685,54 +744,217 @@ fn process_text(ctx: &mut Context, text: &str) {
     }
 
     // Decode HTML entities
-    let decoded = decode_entities_cow(text);
-
     // Handle code blocks specially - preserve all whitespace
     if ctx.in_code_block {
-        ctx.code_content.push_str(decoded.as_ref());
+        if simd::find_amp(text.as_bytes()).is_none() {
+            ctx.code_content.push_str(text);
+        } else {
+            let decoded = decode_entities_cow(text);
+            ctx.code_content.push_str(decoded.as_ref());
+        }
+        return;
+    }
+
+    // Handle inline code - preserve text until closing tag
+    if ctx.in_code {
+        if simd::find_amp(text.as_bytes()).is_none() {
+            ctx.inline_code_content.push_str(text);
+        } else {
+            let decoded = decode_entities_cow(text);
+            ctx.inline_code_content.push_str(decoded.as_ref());
+        }
         return;
     }
 
     // Handle table cells
     if let Some(ref mut table) = ctx.table {
         if table.in_cell {
-            table.cell_content.push_str(decoded.as_ref());
+            if simd::find_amp(text.as_bytes()).is_none() {
+                table.cell_content.push_str(text);
+            } else {
+                let decoded = decode_entities_cow(text);
+                table.cell_content.push_str(decoded.as_ref());
+            }
             return;
         }
     }
 
-    // Apply inline formatting
-    let formatted = apply_inline_formatting(ctx, decoded);
+    let should_escape = ctx.inline_stack.is_empty() && !ctx.in_link;
+    if should_escape && !contains_special_or_amp(text.as_bytes()) {
+        emit_text_to_context(ctx, Cow::Borrowed(text), false);
+        return;
+    }
 
-    emit_text_to_context(ctx, formatted, true);
+    let decoded = if simd::find_amp(text.as_bytes()).is_some() {
+        decode_entities_cow(text)
+    } else {
+        Cow::Borrowed(text)
+    };
+
+    emit_text_to_context(ctx, decoded, should_escape);
 }
 
 fn is_ascii_whitespace_only(text: &str) -> bool {
     text.as_bytes().iter().all(|b| b.is_ascii_whitespace())
 }
 
-/// Apply inline formatting to text.
-fn apply_inline_formatting<'a>(ctx: &Context, text: Cow<'a, str>) -> Cow<'a, str> {
-    if ctx.inline_stack.is_empty() {
-        return text;
-    }
+fn contains_special_or_amp(bytes: &[u8]) -> bool {
+    const ESCAPE_SIMD_THRESHOLD: usize = 64;
+    let special = b"\\`*_{}[]()#!|<>&";
 
-    let mut result = text.into_owned();
-    // Apply formatting in reverse order (innermost first)
-    for format in ctx.inline_stack.iter().rev() {
-        result = match format {
-            InlineFormat::Strong => format_strong(&result),
-            InlineFormat::Emphasis => format_emphasis(&result),
-            InlineFormat::Strikethrough => format_strikethrough(&result),
-            InlineFormat::Code => format_code(&result),
-        };
+    if bytes.len() >= ESCAPE_SIMD_THRESHOLD {
+        simd::find_any_index(bytes, special).is_some()
+    } else {
+        bytes.iter().any(|&b| {
+            matches!(
+                b,
+                b'\\'
+                    | b'`'
+                    | b'*'
+                    | b'_'
+                    | b'{'
+                    | b'}'
+                    | b'['
+                    | b']'
+                    | b'('
+                    | b')'
+                    | b'#'
+                    | b'!'
+                    | b'|'
+                    | b'<'
+                    | b'>'
+                    | b'&'
+            )
+        })
     }
-
-    Cow::Owned(result)
 }
 
+fn tag_kind(name: &str) -> TagKind {
+    let bytes = name.as_bytes();
+    match bytes.len() {
+        1 => match lower_ascii(bytes[0]) {
+            b'a' => TagKind::A,
+            b'p' => TagKind::P,
+            b'b' => TagKind::Strong,
+            b'i' => TagKind::Emphasis,
+            b's' => TagKind::Strikethrough,
+            _ => TagKind::Unknown,
+        },
+        2 => {
+            let b0 = lower_ascii(bytes[0]);
+            let b1 = lower_ascii(bytes[1]);
+            match (b0, b1) {
+                (b'h', b'1') => TagKind::H1,
+                (b'h', b'2') => TagKind::H2,
+                (b'h', b'3') => TagKind::H3,
+                (b'h', b'4') => TagKind::H4,
+                (b'h', b'5') => TagKind::H5,
+                (b'h', b'6') => TagKind::H6,
+                (b'e', b'm') => TagKind::Emphasis,
+                (b'o', b'l') => TagKind::Ol,
+                (b'u', b'l') => TagKind::Ul,
+                (b'l', b'i') => TagKind::Li,
+                (b'b', b'r') => TagKind::Br,
+                (b'h', b'r') => TagKind::Hr,
+                (b't', b'r') => TagKind::Tr,
+                (b't', b'h') => TagKind::Th,
+                (b't', b'd') => TagKind::Td,
+                _ => TagKind::Unknown,
+            }
+        }
+        3 => {
+            let b0 = lower_ascii(bytes[0]);
+            let b1 = lower_ascii(bytes[1]);
+            let b2 = lower_ascii(bytes[2]);
+            match (b0, b1, b2) {
+                (b'd', b'i', b'v') => TagKind::Div,
+                (b'p', b'r', b'e') => TagKind::Pre,
+                (b'i', b'm', b'g') => TagKind::Img,
+                (b'n', b'a', b'v') => TagKind::Nav,
+                (b'd', b'e', b'l') => TagKind::Strikethrough,
+                _ => TagKind::Unknown,
+            }
+        }
+        4 => {
+            let b0 = lower_ascii(bytes[0]);
+            let b1 = lower_ascii(bytes[1]);
+            let b2 = lower_ascii(bytes[2]);
+            let b3 = lower_ascii(bytes[3]);
+            match (b0, b1, b2, b3) {
+                (b's', b'p', b'a', b'n') => TagKind::Span,
+                (b'c', b'o', b'd', b'e') => TagKind::Code,
+                (b'm', b'a', b'i', b'n') => TagKind::Main,
+                _ => TagKind::Unknown,
+            }
+        }
+        5 => {
+            let b0 = lower_ascii(bytes[0]);
+            let b1 = lower_ascii(bytes[1]);
+            let b2 = lower_ascii(bytes[2]);
+            let b3 = lower_ascii(bytes[3]);
+            let b4 = lower_ascii(bytes[4]);
+            match (b0, b1, b2, b3, b4) {
+                (b't', b'a', b'b', b'l', b'e') => TagKind::Table,
+                (b't', b'h', b'e', b'a', b'd') => TagKind::Thead,
+                (b't', b'b', b'o', b'd', b'y') => TagKind::Tbody,
+                (b't', b'f', b'o', b'o', b't') => TagKind::Tfoot,
+                (b'a', b's', b'i', b'd', b'e') => TagKind::Aside,
+                (b'i', b'n', b'p', b'u', b't') => TagKind::Input,
+                _ => TagKind::Unknown,
+            }
+        }
+        6 => {
+            let b0 = lower_ascii(bytes[0]);
+            let b1 = lower_ascii(bytes[1]);
+            let b2 = lower_ascii(bytes[2]);
+            let b3 = lower_ascii(bytes[3]);
+            let b4 = lower_ascii(bytes[4]);
+            let b5 = lower_ascii(bytes[5]);
+            match (b0, b1, b2, b3, b4, b5) {
+                (b's', b't', b'r', b'o', b'n', b'g') => TagKind::Strong,
+                (b's', b't', b'r', b'i', b'k', b'e') => TagKind::Strikethrough,
+                (b'h', b'e', b'a', b'd', b'e', b'r') => TagKind::Header,
+                (b'f', b'o', b'o', b't', b'e', b'r') => TagKind::Footer,
+                _ => TagKind::Unknown,
+            }
+        }
+        7 => {
+            let b0 = lower_ascii(bytes[0]);
+            let b1 = lower_ascii(bytes[1]);
+            let b2 = lower_ascii(bytes[2]);
+            let b3 = lower_ascii(bytes[3]);
+            let b4 = lower_ascii(bytes[4]);
+            let b5 = lower_ascii(bytes[5]);
+            let b6 = lower_ascii(bytes[6]);
+            match (b0, b1, b2, b3, b4, b5, b6) {
+                (b's', b'e', b'c', b't', b'i', b'o', b'n') => TagKind::Section,
+                (b'a', b'r', b't', b'i', b'c', b'l', b'e') => TagKind::Article,
+                _ => TagKind::Unknown,
+            }
+        }
+        10 => {
+            if name.eq_ignore_ascii_case("blockquote") {
+                TagKind::Blockquote
+            } else {
+                TagKind::Unknown
+            }
+        }
+        _ => TagKind::Unknown,
+    }
+}
+
+fn lower_ascii(byte: u8) -> u8 {
+    if byte.is_ascii_uppercase() {
+        byte + 32
+    } else {
+        byte
+    }
+}
+
+// Inline formatting is streamed by emitting markers on tag open/close.
+
 /// Flush the current list item content (used before starting a nested list).
-fn flush_current_list_item(ctx: &mut Context, options: &Options) {
+fn flush_current_list_item<'a>(ctx: &mut Context<'a>, options: &Options) {
     if let Some(mut item_content) = ctx.list_item_stack.pop() {
         let content = clean_text_cow(&item_content);
         if !content.is_empty() && !ctx.list_stack.is_empty() {
@@ -762,7 +984,7 @@ fn flush_current_list_item(ctx: &mut Context, options: &Options) {
 }
 
 /// Emit text to the appropriate context buffer.
-fn emit_text_to_context(ctx: &mut Context, text: Cow<'_, str>, escape: bool) {
+fn emit_text_to_context<'a>(ctx: &mut Context<'a>, text: Cow<'a, str>, escape: bool) {
     let text = if escape && ctx.inline_stack.is_empty() && !ctx.in_link {
         maybe_escape_markdown(text)
     } else {
@@ -770,6 +992,24 @@ fn emit_text_to_context(ctx: &mut Context, text: Cow<'_, str>, escape: bool) {
     };
     let text = text.as_ref();
 
+    if !text.is_empty() && !ctx.inline_stack.is_empty() && should_append_text(ctx, text) {
+        open_inline_markers(ctx);
+    }
+
+    append_to_context(ctx, text);
+}
+
+fn should_append_text(ctx: &Context, text: &str) -> bool {
+    if ctx.in_link || ctx.heading_level > 0 || ctx.in_paragraph {
+        return true;
+    }
+    if ctx.list_item_stack.last().is_some() {
+        return true;
+    }
+    !text.trim().is_empty()
+}
+
+fn append_to_context<'a>(ctx: &mut Context<'a>, text: &str) {
     if ctx.in_link {
         ctx.link_text.push_str(text);
     } else if ctx.heading_level > 0 {
@@ -787,6 +1027,34 @@ fn emit_text_to_context(ctx: &mut Context, text: Cow<'_, str>, escape: bool) {
     }
 }
 
+fn open_inline_markers<'a>(ctx: &mut Context<'a>) {
+    let len = ctx.inline_stack.len();
+    for idx in 0..len {
+        let marker = if !ctx.inline_stack[idx].opened {
+            ctx.inline_stack[idx].opened = true;
+            Some(inline_marker(ctx.inline_stack[idx].kind))
+        } else {
+            None
+        };
+
+        if let Some(marker) = marker {
+            append_to_context(ctx, marker);
+        }
+    }
+}
+
+fn emit_inline_marker<'a>(ctx: &mut Context<'a>, kind: InlineFormat) {
+    append_to_context(ctx, inline_marker(kind));
+}
+
+fn inline_marker(kind: InlineFormat) -> &'static str {
+    match kind {
+        InlineFormat::Strong => "**",
+        InlineFormat::Emphasis => "*",
+        InlineFormat::Strikethrough => "~~",
+    }
+}
+
 fn maybe_escape_markdown<'a>(text: Cow<'a, str>) -> Cow<'a, str> {
     match text {
         Cow::Borrowed(value) => escape_markdown_cow(value),
@@ -801,7 +1069,7 @@ fn maybe_escape_markdown<'a>(text: Cow<'a, str>) -> Cow<'a, str> {
 }
 
 /// Finalize conversion (flush pending content).
-fn finalize(ctx: &mut Context) {
+fn finalize<'a>(ctx: &mut Context<'a>) {
     // Flush any pending paragraph
     if ctx.in_paragraph && !ctx.pending_text.is_empty() {
         let mut pending = std::mem::take(&mut ctx.pending_text);
@@ -827,7 +1095,7 @@ fn finalize(ctx: &mut Context) {
 
     // Flush any pending code block
     if ctx.in_code_block {
-        let code = format_code_block(&ctx.code_content, ctx.code_language.as_deref());
+        let code = format_code_block(&ctx.code_content, ctx.code_language);
         ctx.emit_block(&code);
     }
 

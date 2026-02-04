@@ -301,32 +301,7 @@ pub fn format_br() -> &'static str {
     "  \n"
 }
 
-/// Format strong emphasis.
-pub fn format_strong(text: &str) -> String {
-    let mut result = String::with_capacity(text.len() + 4);
-    result.push_str("**");
-    result.push_str(text);
-    result.push_str("**");
-    result
-}
-
-/// Format emphasis.
-pub fn format_emphasis(text: &str) -> String {
-    let mut result = String::with_capacity(text.len() + 2);
-    result.push('*');
-    result.push_str(text);
-    result.push('*');
-    result
-}
-
-/// Format strikethrough (GFM).
-pub fn format_strikethrough(text: &str) -> String {
-    let mut result = String::with_capacity(text.len() + 4);
-    result.push_str("~~");
-    result.push_str(text);
-    result.push_str("~~");
-    result
-}
+// Inline formatting is handled in the converter to avoid extra allocations.
 
 /// Format inline code.
 pub fn format_code(text: &str) -> String {
@@ -534,11 +509,6 @@ pub fn normalize_whitespace(text: &str) -> String {
 
 /// Trim leading/trailing whitespace and collapse internal whitespace.
 /// Preserves Markdown line breaks (`  \n`).
-#[allow(dead_code)]
-pub fn clean_text(text: &str) -> String {
-    clean_text_cow(text).into_owned()
-}
-
 pub(crate) fn clean_text_cow(text: &str) -> Cow<'_, str> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -755,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_clean_text() {
-        assert_eq!(clean_text("  hello  world  "), "hello world");
-        assert_eq!(clean_text("\n\nhello\n\n"), "hello");
+        assert_eq!(clean_text_cow("  hello  world  "), "hello world");
+        assert_eq!(clean_text_cow("\n\nhello\n\n"), "hello");
     }
 }
