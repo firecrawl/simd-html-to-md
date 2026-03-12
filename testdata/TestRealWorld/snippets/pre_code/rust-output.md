@@ -2,12 +2,19 @@ The MJML tool provides a CLI you can use to transform MJML into HTML:
 
 ```
 bash
+$ mjml input.mjml -o output.html
 ```
 
 Curiously, all text elements (paragraphs and headings) use the same tag, `<mj-text>` . You can create headings by applying cosmetic styles as inline attributes, like:
 
 ```
 html
+<mj-text
+  align="center"
+  font-size="32px"
+  font-weight="bold"
+  color="#FF0000"
+>
 ```
 
 * * *

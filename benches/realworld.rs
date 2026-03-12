@@ -3,7 +3,7 @@
 //! These benchmarks exercise the converter on the same HTML files the Go
 //! library uses, so timings are directly comparable.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use simd_html_to_md::html_to_md;
 use std::fs;
 
@@ -55,7 +55,10 @@ fn bench_perf_table(c: &mut Criterion) {
 
 fn bench_realworld_sites(c: &mut Criterion) {
     let cases: &[(&str, &str)] = &[
-        ("blog.golang.org", "testdata/TestRealWorld/blog.golang.org/input.html"),
+        (
+            "blog.golang.org",
+            "testdata/TestRealWorld/blog.golang.org/input.html",
+        ),
         ("golang.org", "testdata/TestRealWorld/golang.org/input.html"),
     ];
 
@@ -76,14 +79,38 @@ fn bench_realworld_sites(c: &mut Criterion) {
 
 fn bench_realworld_snippets(c: &mut Criterion) {
     let cases: &[(&str, &str)] = &[
-        ("github_about", "testdata/TestRealWorld/snippets/github_about/input.html"),
-        ("heading_in_link", "testdata/TestRealWorld/snippets/heading_in_link/input.html"),
-        ("nav_nested_list", "testdata/TestRealWorld/snippets/nav_nested_list/input.html"),
-        ("pre_code", "testdata/TestRealWorld/snippets/pre_code/input.html"),
-        ("price_em_in_a_p", "testdata/TestRealWorld/snippets/price_em_in_a_p/input.html"),
-        ("square_brackets", "testdata/TestRealWorld/snippets/square_brackets/input.html"),
-        ("text_with_whitespace", "testdata/TestRealWorld/snippets/text_with_whitespace/input.html"),
-        ("turndown_demo", "testdata/TestRealWorld/snippets/turndown_demo/input.html"),
+        (
+            "github_about",
+            "testdata/TestRealWorld/snippets/github_about/input.html",
+        ),
+        (
+            "heading_in_link",
+            "testdata/TestRealWorld/snippets/heading_in_link/input.html",
+        ),
+        (
+            "nav_nested_list",
+            "testdata/TestRealWorld/snippets/nav_nested_list/input.html",
+        ),
+        (
+            "pre_code",
+            "testdata/TestRealWorld/snippets/pre_code/input.html",
+        ),
+        (
+            "price_em_in_a_p",
+            "testdata/TestRealWorld/snippets/price_em_in_a_p/input.html",
+        ),
+        (
+            "square_brackets",
+            "testdata/TestRealWorld/snippets/square_brackets/input.html",
+        ),
+        (
+            "text_with_whitespace",
+            "testdata/TestRealWorld/snippets/text_with_whitespace/input.html",
+        ),
+        (
+            "turndown_demo",
+            "testdata/TestRealWorld/snippets/turndown_demo/input.html",
+        ),
         ("tweet", "testdata/TestRealWorld/snippets/tweet/input.html"),
     ];
 
@@ -104,16 +131,25 @@ fn bench_realworld_snippets(c: &mut Criterion) {
 
 fn bench_commonmark(c: &mut Criterion) {
     let cases: &[(&str, &str)] = &[
-        ("blockquote", "testdata/TestCommonmark/blockquote/input.html"),
+        (
+            "blockquote",
+            "testdata/TestCommonmark/blockquote/input.html",
+        ),
         ("bold", "testdata/TestCommonmark/bold/input.html"),
-        ("br_element", "testdata/TestCommonmark/br_element/input.html"),
+        (
+            "br_element",
+            "testdata/TestCommonmark/br_element/input.html",
+        ),
         ("heading", "testdata/TestCommonmark/heading/input.html"),
         ("hr", "testdata/TestCommonmark/hr/input.html"),
         ("image", "testdata/TestCommonmark/image/input.html"),
         ("italic", "testdata/TestCommonmark/italic/input.html"),
         ("link", "testdata/TestCommonmark/link/input.html"),
         ("list", "testdata/TestCommonmark/list/input.html"),
-        ("list_nested", "testdata/TestCommonmark/list_nested/input.html"),
+        (
+            "list_nested",
+            "testdata/TestCommonmark/list_nested/input.html",
+        ),
         ("p_tag", "testdata/TestCommonmark/p_tag/input.html"),
         ("pre_code", "testdata/TestCommonmark/pre_code/input.html"),
     ];
@@ -136,7 +172,10 @@ fn bench_commonmark(c: &mut Criterion) {
 fn bench_plugins(c: &mut Criterion) {
     let cases: &[(&str, &str)] = &[
         ("table", "testdata/TestPlugins/table/input.html"),
-        ("strikethrough", "testdata/TestPlugins/strikethrough/input.html"),
+        (
+            "strikethrough",
+            "testdata/TestPlugins/strikethrough/input.html",
+        ),
         ("checkbox", "testdata/TestPlugins/checkbox/input.html"),
     ];
 

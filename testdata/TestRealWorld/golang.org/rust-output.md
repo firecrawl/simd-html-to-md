@@ -1,5 +1,19 @@
 ...
-[The Go Programming Language](/) [Go](/) [▽](#) [Documents](/doc/) [Packages](/pkg/) [The Project](/project/) [Help](/help/) [Blog](/blog/) [Play](http://play.golang.org/ "Show Go Playground") submit searchRunFormatSharePop-outTry Go
+[The Go Programming Language](/) [Go](/) [▽](#) [Documents](/doc/) [Packages](/pkg/) [The Project](/project/) [Help](/help/) [Blog](/blog/) [Play](http://play.golang.org/ "Show Go Playground") submit searchpackage main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Hello, 世界")
+}RunFormatSharePop-outTry Go// You can edit this code!
+// Click here and start typing.
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Hello, 世界")
+}
 
 ```
 

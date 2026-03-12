@@ -1,10 +1,9 @@
 //! Main HTML to Markdown conversion logic with state machine.
 
 use crate::emitter::{
-    clean_text_cow, escape_markdown_cow, format_br, format_code,
-    format_code_block, format_heading, format_hr, format_image, format_link,
-    format_ordered_item, format_unordered_item, Alignment,
-    TableFormatter,
+    Alignment, TableFormatter, clean_text_cow, escape_markdown_cow, format_br, format_code,
+    format_code_block, format_heading, format_hr, format_image, format_link, format_ordered_item,
+    format_unordered_item,
 };
 use crate::entities::decode_entities_cow;
 use crate::simd;
@@ -36,7 +35,6 @@ impl Default for Options {
                 "style".to_string(),
                 "noscript".to_string(),
                 "head".to_string(),
-                "textarea".to_string(),
             ],
         }
     }
@@ -342,7 +340,11 @@ impl<'a> Context<'a> {
                     // Width of "{num}. " = digits of (num-1 or num) + 2
                     // num is the next number to emit, so current item was num-1
                     let current = if *num > 1 { num - 1 } else { 1 };
-                    let digits = if current == 0 { 1 } else { (current as f64).log10() as usize + 1 };
+                    let digits = if current == 0 {
+                        1
+                    } else {
+                        (current as f64).log10() as usize + 1
+                    };
                     digits + 2
                 }
                 ListType::Unordered => 2,
@@ -424,16 +426,16 @@ fn process_start_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>, options: &Options
             return;
         }
         // Skip gutter/line-number elements.
-        if let Some(class) = tag.get_attr("class") {
-            if is_gutter_element(class) {
-                ctx.code_skip_depth += 1;
-                return;
-            }
+        if let Some(class) = tag.get_attr("class")
+            && is_gutter_element(class)
+        {
+            ctx.code_skip_depth += 1;
+            return;
         }
         // Skip aria-hidden elements (duplicated syntax-highlighted content).
         if tag
             .get_attr("aria-hidden")
-            .map_or(false, |v| v.eq_ignore_ascii_case("true"))
+            .is_some_and(|v| v.eq_ignore_ascii_case("true"))
         {
             ctx.code_skip_depth += 1;
             return;
@@ -471,16 +473,16 @@ fn process_start_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>, options: &Options
         // Paragraph
         TagKind::P => {
             // Inside a table cell, treat <p> as a separator (not a paragraph)
-            if ctx.table.as_ref().map_or(false, |t| t.in_cell) {
+            if ctx.table.as_ref().is_some_and(|t| t.in_cell) {
                 return;
             }
             // Inside a list item: add paragraph break before this <p> content
             if !ctx.list_item_stack.is_empty() {
-                if let Some(content) = ctx.list_item_stack.last() {
-                    if !content.trim().is_empty() {
-                        let content_ref = ctx.list_item_stack.last_mut().unwrap();
-                        content_ref.push_str("\n\n");
-                    }
+                if let Some(content) = ctx.list_item_stack.last()
+                    && !content.trim().is_empty()
+                {
+                    let content_ref = ctx.list_item_stack.last_mut().unwrap();
+                    content_ref.push_str("\n\n");
                 }
                 ctx.in_paragraph = true;
                 ctx.pending_text.clear();
@@ -501,7 +503,10 @@ fn process_start_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>, options: &Options
 
         // Emphasis
         TagKind::Strong => {
-            let is_nested = ctx.inline_stack.iter().any(|s| s.kind == InlineFormat::Strong);
+            let is_nested = ctx
+                .inline_stack
+                .iter()
+                .any(|s| s.kind == InlineFormat::Strong);
             ctx.inline_stack.push(InlineState {
                 kind: InlineFormat::Strong,
                 opened: false,
@@ -509,7 +514,10 @@ fn process_start_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>, options: &Options
             });
         }
         TagKind::Emphasis => {
-            let is_nested = ctx.inline_stack.iter().any(|s| s.kind == InlineFormat::Emphasis);
+            let is_nested = ctx
+                .inline_stack
+                .iter()
+                .any(|s| s.kind == InlineFormat::Emphasis);
             ctx.inline_stack.push(InlineState {
                 kind: InlineFormat::Emphasis,
                 opened: false,
@@ -517,7 +525,10 @@ fn process_start_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>, options: &Options
             });
         }
         TagKind::Strikethrough => {
-            let is_nested = ctx.inline_stack.iter().any(|s| s.kind == InlineFormat::Strikethrough);
+            let is_nested = ctx
+                .inline_stack
+                .iter()
+                .any(|s| s.kind == InlineFormat::Strikethrough);
             ctx.inline_stack.push(InlineState {
                 kind: InlineFormat::Strikethrough,
                 opened: false,
@@ -622,10 +633,10 @@ fn process_start_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>, options: &Options
             }
         }
         TagKind::Th | TagKind::Td => {
-            if let Some(ref mut table) = ctx.table {
-                if matches!(kind, TagKind::Th) {
-                    table.current_row_is_header = true;
-                }
+            if let Some(ref mut table) = ctx.table
+                && matches!(kind, TagKind::Th)
+            {
+                table.current_row_is_header = true;
             }
             if let Some(ref mut table) = ctx.table {
                 table.in_cell = true;
@@ -684,30 +695,35 @@ fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
 
     match kind {
         // Headings
-        TagKind::H1 | TagKind::H2 | TagKind::H3 | TagKind::H4 | TagKind::H5 | TagKind::H6 => {
-            if ctx.heading_level > 0 {
-                let mut heading_text = std::mem::take(&mut ctx.heading_text);
-                let text = clean_text_cow(&heading_text);
-                if !text.is_empty() {
-                    if ctx.in_link {
-                        // Heading inside a link: emit as heading with link inside
-                        // e.g. <a href="/"><h1>Blog</h1></a> → # [Blog](/)
-                        let url = ctx.link_url.take().unwrap_or("");
-                        let title = ctx.link_title.take();
-                        let link = format_link(text.as_ref(), url, title);
-                        let heading = format_heading(ctx.heading_level, &link);
-                        ctx.in_link = false;
-                        ctx.link_text.clear();
-                        ctx.emit_block(&heading);
-                    } else {
+        TagKind::H1 | TagKind::H2 | TagKind::H3 | TagKind::H4 | TagKind::H5 | TagKind::H6
+            if ctx.heading_level > 0 =>
+        {
+            let mut heading_text = std::mem::take(&mut ctx.heading_text);
+            let text = clean_text_cow(&heading_text);
+            if !text.is_empty() {
+                if ctx.in_link {
+                    let url = ctx.link_url.take().unwrap_or("");
+                    let title = ctx.link_title.take();
+                    ctx.in_link = false;
+                    ctx.link_text.clear();
+                    if url.starts_with('#') || url.is_empty() {
+                        // Anchor/fragment link: drop it, just keep heading text
                         let heading = format_heading(ctx.heading_level, text.as_ref());
                         ctx.emit_block(&heading);
+                    } else {
+                        // Real link: preserve it in the heading
+                        let link = format_link(text.as_ref(), url, title);
+                        let heading = format_heading(ctx.heading_level, &link);
+                        ctx.emit_block(&heading);
                     }
+                } else {
+                    let heading = format_heading(ctx.heading_level, text.as_ref());
+                    ctx.emit_block(&heading);
                 }
-                heading_text.clear();
-                ctx.heading_text = heading_text;
-                ctx.heading_level = 0;
             }
+            heading_text.clear();
+            ctx.heading_text = heading_text;
+            ctx.heading_level = 0;
         }
 
         // Paragraph
@@ -720,13 +736,13 @@ fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
                 return;
             }
             // Inside a table cell, emit <br> as separator
-            if let Some(ref mut table) = ctx.table {
-                if table.in_cell {
-                    if !table.cell_content.is_empty() {
-                        table.cell_content.push_str("<br>");
-                    }
-                    return;
+            if let Some(ref mut table) = ctx.table
+                && table.in_cell
+            {
+                if !table.cell_content.is_empty() {
+                    table.cell_content.push_str("<br>");
                 }
+                return;
             }
             // Inside a list item: just close paragraph state; the separator
             // was already added when <p> opened.
@@ -759,111 +775,130 @@ fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
         }
 
         // Code
-        TagKind::Code => {
-            if !ctx.in_pre {
-                if ctx.in_code {
-                    let code = format_code(&ctx.inline_code_content);
-                    emit_text_to_context(ctx, Cow::Owned(code), false);
-                    ctx.inline_code_content.clear();
-                }
-                ctx.in_code = false;
+        TagKind::Code if !ctx.in_pre => {
+            if ctx.in_code {
+                let code = format_code(&ctx.inline_code_content);
+                emit_text_to_context(ctx, Cow::Owned(code), false);
+                ctx.inline_code_content.clear();
             }
+            ctx.in_code = false;
         }
 
         // Preformatted / code blocks
-        TagKind::Pre => {
-            if ctx.in_code_block {
-                let code = format_code_block(&ctx.code_content, ctx.code_language);
-                // Must clear code block state before emit_block so blockquote
-                // prefix is applied to the formatted code block.
-                ctx.in_code_block = false;
-                ctx.in_pre = false;
-                ctx.emit_block(&code);
-                ctx.code_content.clear();
-                ctx.code_language = None;
-                ctx.code_skip_depth = 0;
-            }
+        TagKind::Pre if ctx.in_code_block => {
+            let code = format_code_block(&ctx.code_content, ctx.code_language);
+            // Must clear code block state before emit_block so blockquote
+            // prefix is applied to the formatted code block.
+            ctx.in_code_block = false;
+            ctx.in_pre = false;
+            ctx.emit_block(&code);
+            ctx.code_content.clear();
+            ctx.code_language = None;
+            ctx.code_skip_depth = 0;
         }
 
         // Links
-        TagKind::A => {
-            if ctx.in_link {
-                let url = ctx.link_url.take().unwrap_or("");
-                let title = ctx.link_title.take();
+        TagKind::A if ctx.in_link => {
+            let url = ctx.link_url.take().unwrap_or("");
+            let title = ctx.link_title.take();
 
-                // Remove "skip to content" navigation links.
-                if is_skip_to_content_link(url, &ctx.link_text) {
+            // Remove "skip to content" navigation links.
+            if is_skip_to_content_link(url, &ctx.link_text) {
+                ctx.in_link = false;
+                ctx.link_text.clear();
+                return;
+            }
+
+            // Decode entities and normalize whitespace in title
+            let decoded_title;
+            let title = match title {
+                Some(t) => {
+                    let needs_decode = t.contains('&');
+                    let needs_normalize = t.contains('\n') || t.contains('\r');
+                    if needs_decode || needs_normalize {
+                        let mut s = if needs_decode {
+                            crate::entities::decode_entities(t)
+                        } else {
+                            t.to_string()
+                        };
+                        if needs_normalize {
+                            s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+                        }
+                        decoded_title = s;
+                        Some(decoded_title.as_str())
+                    } else {
+                        Some(t)
+                    }
+                }
+                None => None,
+            };
+
+            // Check if link wraps a single image and can be simplified
+            let link_text_trimmed = ctx.link_text.trim();
+            let is_image_only = link_text_trimmed.starts_with("![")
+                && link_text_trimmed.ends_with(')')
+                && link_text_trimmed.matches("![").count() == 1;
+
+            let link = if is_image_only
+                && (url.is_empty()
+                    || (title.is_none() && link_text_trimmed.contains(&format!("]({})", url))))
+            {
+                // Link wraps an image with same/empty URL — just output the image
+                link_text_trimmed.to_string()
+            } else {
+                // Clean link text, preserving backslash-newline sequences from <br>
+                let text = if ctx.link_text.contains("\\\n") {
+                    let lines: Vec<&str> = ctx.link_text.split("\\\n").collect();
+                    let cleaned: Vec<String> = lines
+                        .iter()
+                        .map(|l| clean_text_cow(l).into_owned())
+                        .collect();
+                    Cow::Owned(cleaned.join("\\\n"))
+                } else {
+                    clean_text_cow(&ctx.link_text)
+                };
+                let link_text = if text.is_empty() {
+                    title.unwrap_or(url)
+                } else {
+                    text.as_ref()
+                };
+                format_link(link_text, url, title)
+            };
+
+            // Inside a heading: drop anchor links, keep real links
+            if ctx.heading_level > 0 {
+                if url.starts_with('#') || url.is_empty() {
+                    // Anchor link: drop it, text already in heading_text
                     ctx.in_link = false;
                     ctx.link_text.clear();
                     return;
                 }
-
-                // Decode entities and normalize whitespace in title
-                let decoded_title;
-                let title = match title {
-                    Some(t) => {
-                        let needs_decode = t.contains('&');
-                        let needs_normalize = t.contains('\n') || t.contains('\r');
-                        if needs_decode || needs_normalize {
-                            let mut s = if needs_decode {
-                                crate::entities::decode_entities(t)
-                            } else {
-                                t.to_string()
-                            };
-                            if needs_normalize {
-                                s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-                            }
-                            decoded_title = s;
-                            Some(decoded_title.as_str())
-                        } else {
-                            Some(t)
-                        }
-                    }
-                    None => None,
-                };
-
-                // Check if link wraps a single image and can be simplified
-                let link_text_trimmed = ctx.link_text.trim();
-                let is_image_only = link_text_trimmed.starts_with("![")
-                    && link_text_trimmed.ends_with(')')
-                    && link_text_trimmed.matches("![").count() == 1;
-
-                let link = if is_image_only && (url.is_empty() || (title.is_none() && link_text_trimmed.contains(&format!("]({})", url)))) {
-                    // Link wraps an image with same/empty URL — just output the image
-                    link_text_trimmed.to_string()
-                } else {
-                    // Clean link text, preserving backslash-newline sequences from <br>
-                    let text = if ctx.link_text.contains("\\\n") {
-                        let lines: Vec<&str> = ctx.link_text.split("\\\n").collect();
-                        let cleaned: Vec<String> = lines.iter()
-                            .map(|l| clean_text_cow(l).into_owned())
-                            .collect();
-                        Cow::Owned(cleaned.join("\\\n"))
-                    } else {
-                        clean_text_cow(&ctx.link_text)
-                    };
-                    let link_text = if text.is_empty() {
-                        title.unwrap_or(url)
-                    } else {
-                        text.as_ref()
-                    };
-                    format_link(link_text, url, title)
-                };
+                // Real link: replace raw text in heading_text with formatted link
+                let raw_len = ctx.link_text.len();
+                let heading_len = ctx.heading_text.len();
+                ctx.heading_text
+                    .truncate(heading_len.saturating_sub(raw_len));
+                ctx.heading_text.push_str(&link);
                 ctx.in_link = false;
                 ctx.link_text.clear();
-
-                // Add space before link if preceded by non-whitespace
-                if let Some(ch) = last_char_in_buffer(ctx) {
-                    if !ch.is_whitespace() && ch != '\n' {
-                        append_to_context(ctx, " ");
-                    }
-                }
-
-                // Emit the link
-                emit_text_to_context(ctx, Cow::Owned(link), false);
-                // Set flag so next text adds space after link if needed
-                ctx.just_closed_inline = true;
+                return;
             }
+
+            ctx.in_link = false;
+            ctx.link_text.clear();
+
+            // Add space before link if preceded by non-whitespace
+            if let Some(ch) = last_char_in_buffer(ctx)
+                && !ch.is_whitespace()
+                && ch != '\n'
+            {
+                append_to_context(ctx, " ");
+            }
+
+            // Emit the link
+            emit_text_to_context(ctx, Cow::Owned(link), false);
+            // Set flag so next text adds space after link if needed
+            ctx.just_closed_inline = true;
         }
 
         // Lists
@@ -890,7 +925,10 @@ fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
                             }
                             None => content.into_owned(),
                         };
-                        if ctx.list_stack.len() == 1 && !ctx.output.is_empty() && !ctx.output.ends_with('\n') {
+                        if ctx.list_stack.len() == 1
+                            && !ctx.output.is_empty()
+                            && !ctx.output.ends_with('\n')
+                        {
                             ctx.output.push('\n');
                         }
                         ctx.emit(&item);
@@ -946,7 +984,10 @@ fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
                         };
 
                         // For first list item, ensure proper spacing from previous content
-                        if ctx.list_stack.len() == 1 && !ctx.output.is_empty() && !ctx.output.ends_with('\n') {
+                        if ctx.list_stack.len() == 1
+                            && !ctx.output.is_empty()
+                            && !ctx.output.ends_with('\n')
+                        {
                             ctx.output.push('\n');
                         }
                         ctx.emit(&item);
@@ -958,24 +999,22 @@ fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
         }
 
         // Blockquote
-        TagKind::Blockquote => {
-            if ctx.blockquote_depth > 0 {
-                // Clean up trailing blockquote blank line.
-                // emit_block leaves \n{prefix}\n at the end; convert to the
-                // outer depth's format (or plain \n\n for outermost close).
-                if ctx.ends_with_bq_blank_line() {
-                    let prefix_len = ctx.blockquote_depth * 2 - 1;
-                    let remove = prefix_len + 1; // prefix + trailing \n
-                    ctx.output.truncate(ctx.output.len() - remove);
-                    ctx.blockquote_depth -= 1;
-                    if ctx.blockquote_depth > 0 {
-                        ctx.push_bq_blank_line();
-                    } else {
-                        ctx.output.push('\n');
-                    }
+        TagKind::Blockquote if ctx.blockquote_depth > 0 => {
+            // Clean up trailing blockquote blank line.
+            // emit_block leaves \n{prefix}\n at the end; convert to the
+            // outer depth's format (or plain \n\n for outermost close).
+            if ctx.ends_with_bq_blank_line() {
+                let prefix_len = ctx.blockquote_depth * 2 - 1;
+                let remove = prefix_len + 1; // prefix + trailing \n
+                ctx.output.truncate(ctx.output.len() - remove);
+                ctx.blockquote_depth -= 1;
+                if ctx.blockquote_depth > 0 {
+                    ctx.push_bq_blank_line();
                 } else {
-                    ctx.blockquote_depth -= 1;
+                    ctx.output.push('\n');
                 }
+            } else {
+                ctx.blockquote_depth -= 1;
             }
         }
 
@@ -986,7 +1025,8 @@ fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
                 if !table.has_headers {
                     let max_cols = table.formatter.max_columns();
                     if max_cols > 0 {
-                        let empty_headers: Vec<String> = (0..max_cols).map(|_| String::new()).collect();
+                        let empty_headers: Vec<String> =
+                            (0..max_cols).map(|_| String::new()).collect();
                         table.formatter.set_headers(empty_headers);
                     }
                 }
@@ -1002,51 +1042,51 @@ fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
             }
         }
         TagKind::Tr => {
-            if let Some(ref mut table) = ctx.table {
-                if table.in_row {
-                    if table.in_header || (table.current_row_is_header && !table.has_headers) {
-                        table.formatter.set_headers(table.current_row.clone());
-                        table.has_headers = true;
-                    } else {
-                        table.formatter.add_row(table.current_row.clone());
-                    }
-                    table.current_row.clear();
-                    table.in_row = false;
+            if let Some(ref mut table) = ctx.table
+                && table.in_row
+            {
+                if table.in_header || (table.current_row_is_header && !table.has_headers) {
+                    table.formatter.set_headers(table.current_row.clone());
+                    table.has_headers = true;
+                } else {
+                    table.formatter.add_row(table.current_row.clone());
                 }
+                table.current_row.clear();
+                table.in_row = false;
             }
         }
         TagKind::Th | TagKind::Td => {
-            if let Some(ref mut table) = ctx.table {
-                if table.in_cell {
-                    let mut cleaned = clean_text_cow(&table.cell_content).into_owned();
-                    // Strip trailing <br> from cell content
-                    while cleaned.ends_with("<br>") {
-                        cleaned.truncate(cleaned.len() - 4);
-                        cleaned = cleaned.trim_end().to_string();
-                    }
-                    // Normalize spaces around <br>
-                    if cleaned.contains("<br>") {
-                        cleaned = cleaned.replace(" <br>", "<br>").replace("<br> ", "<br>");
-                    }
-                    // Escape unescaped pipe characters inside table cells
-                    let escaped = if cleaned.contains('|') {
-                        // Only escape pipes that aren't already escaped
-                        let mut result = String::with_capacity(cleaned.len() + 4);
-                        let bytes = cleaned.as_bytes();
-                        for (i, &b) in bytes.iter().enumerate() {
-                            if b == b'|' && (i == 0 || bytes[i - 1] != b'\\') {
-                                result.push('\\');
-                            }
-                            result.push(b as char);
-                        }
-                        result
-                    } else {
-                        cleaned
-                    };
-                    table.current_row.push(escaped);
-                    table.cell_content.clear();
-                    table.in_cell = false;
+            if let Some(ref mut table) = ctx.table
+                && table.in_cell
+            {
+                let mut cleaned = clean_text_cow(&table.cell_content).into_owned();
+                // Strip trailing <br> from cell content
+                while cleaned.ends_with("<br>") {
+                    cleaned.truncate(cleaned.len() - 4);
+                    cleaned = cleaned.trim_end().to_string();
                 }
+                // Normalize spaces around <br>
+                if cleaned.contains("<br>") {
+                    cleaned = cleaned.replace(" <br>", "<br>").replace("<br> ", "<br>");
+                }
+                // Escape unescaped pipe characters inside table cells
+                let escaped = if cleaned.contains('|') {
+                    // Only escape pipes that aren't already escaped
+                    let mut result = String::with_capacity(cleaned.len() + 4);
+                    let bytes = cleaned.as_bytes();
+                    for (i, &b) in bytes.iter().enumerate() {
+                        if b == b'|' && (i == 0 || bytes[i - 1] != b'\\') {
+                            result.push('\\');
+                        }
+                        result.push(b as char);
+                    }
+                    result
+                } else {
+                    cleaned
+                };
+                table.current_row.push(escaped);
+                table.cell_content.clear();
+                table.in_cell = false;
             }
         }
 
@@ -1067,19 +1107,21 @@ fn process_self_closing_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>) {
                 ctx.code_content.push('\n');
             } else if ctx.in_link {
                 ctx.link_text.push_str("\\\n");
-            } else if let Some(ref mut table) = ctx.table {
-                if table.in_cell {
-                    table.cell_content.push_str("<br>");
-                    return;
-                }
+            } else if let Some(ref mut table) = ctx.table
+                && table.in_cell
+            {
+                table.cell_content.push_str("<br>");
+                return;
             }
             // Note: the above returns handle their cases. Fall through for remaining.
-            if !ctx.in_code_block && !ctx.in_link && ctx.table.as_ref().map_or(true, |t| !t.in_cell) {
+            if !ctx.in_code_block && !ctx.in_link && ctx.table.as_ref().is_none_or(|t| !t.in_cell) {
                 if let Some(content) = ctx.current_list_item() {
                     content.push_str(format_br());
                 } else if ctx.in_paragraph {
                     // Close any open inline formatting before the break
-                    let open_formats: Vec<InlineFormat> = ctx.inline_stack.iter()
+                    let open_formats: Vec<InlineFormat> = ctx
+                        .inline_stack
+                        .iter()
                         .filter(|s| s.opened)
                         .map(|s| s.kind)
                         .collect();
@@ -1140,15 +1182,13 @@ fn process_self_closing_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>) {
         }
 
         // Input (for checkboxes in task lists)
-        TagKind::Input => {
-            if tag.get_attr("type") == Some("checkbox") {
-                let checked = tag
-                    .attributes
-                    .iter()
-                    .any(|a| a.name.eq_ignore_ascii_case("checked"));
-                let checkbox = if checked { "[x] " } else { "[ ] " };
-                emit_text_to_context(ctx, Cow::Borrowed(checkbox), false);
-            }
+        TagKind::Input if tag.get_attr("type") == Some("checkbox") => {
+            let checked = tag
+                .attributes
+                .iter()
+                .any(|a| a.name.eq_ignore_ascii_case("checked"));
+            let checkbox = if checked { "[x] " } else { "[ ] " };
+            emit_text_to_context(ctx, Cow::Borrowed(checkbox), false);
         }
 
         _ => {}
@@ -1168,7 +1208,7 @@ fn process_text<'a>(ctx: &mut Context<'a>, text: &'a str) {
         && !ctx.in_link
         && ctx.heading_level == 0
         && ctx.list_item_stack.is_empty()
-        && ctx.table.as_ref().map_or(true, |table| !table.in_cell)
+        && ctx.table.as_ref().is_none_or(|table| !table.in_cell)
         && is_ascii_whitespace_only(text)
     {
         // Ignore whitespace-only text between block elements.
@@ -1389,9 +1429,12 @@ fn is_gutter_element(class: &str) -> bool {
 
 /// Case-insensitive ASCII substring search (needle must be lowercase).
 fn contains_ascii_ci(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window.iter().zip(needle).all(|(h, n)| h.eq_ignore_ascii_case(n)))
+    haystack.windows(needle.len()).any(|window| {
+        window
+            .iter()
+            .zip(needle)
+            .all(|(h, n)| h.eq_ignore_ascii_case(n))
+    })
 }
 
 /// Check if a tag kind is a block element that should emit newlines in code blocks.
@@ -1456,7 +1499,10 @@ fn needs_space_before_inline(ctx: &Context) -> bool {
 /// Whether a byte is punctuation that should not be preceded by a space.
 #[inline]
 fn is_punctuation(b: u8) -> bool {
-    matches!(b, b'.' | b',' | b':' | b';' | b'!' | b'?' | b')' | b']' | b'\'' | b'"' | b'\xE2')
+    matches!(
+        b,
+        b'.' | b',' | b':' | b';' | b'!' | b'?' | b')' | b']' | b'\'' | b'"' | b'\xE2'
+    )
     // 0xE2 = start of UTF-8 multi-byte sequences like \u{2019} (right single quote)
 }
 
@@ -1468,7 +1514,7 @@ fn trim_trailing_whitespace_in_buffer(ctx: &mut Context) {
         &mut ctx.link_text
     } else if let Some(content) = ctx.list_item_stack.last_mut() {
         content
-    } else if ctx.table.as_ref().map_or(false, |t| t.in_cell) {
+    } else if ctx.table.as_ref().is_some_and(|t| t.in_cell) {
         if let Some(ref mut table) = ctx.table {
             &mut table.cell_content
         } else {
@@ -1598,6 +1644,9 @@ fn append_to_context<'a>(ctx: &mut Context<'a>, text: &str) {
     // can be flattened to bold text by the heading close handler.
     if ctx.heading_level > 0 {
         ctx.heading_text.push_str(text);
+        if ctx.in_link {
+            ctx.link_text.push_str(text);
+        }
         return;
     }
     if ctx.in_link {
@@ -1608,11 +1657,11 @@ fn append_to_context<'a>(ctx: &mut Context<'a>, text: &str) {
         content.push_str(text);
         return;
     }
-    if let Some(ref mut table) = ctx.table {
-        if table.in_cell {
-            table.cell_content.push_str(text);
-            return;
-        }
+    if let Some(ref mut table) = ctx.table
+        && table.in_cell
+    {
+        table.cell_content.push_str(text);
+        return;
     }
     if ctx.in_paragraph {
         ctx.pending_text.push_str(text);
@@ -1695,7 +1744,10 @@ fn escape_leading_list_marker(text: &str) -> String {
         return text.to_string();
     }
     // Check for unordered list markers: - * +
-    if bytes.len() >= 2 && (bytes[0] == b'-' || bytes[0] == b'*' || bytes[0] == b'+') && bytes[1] == b' ' {
+    if bytes.len() >= 2
+        && (bytes[0] == b'-' || bytes[0] == b'*' || bytes[0] == b'+')
+        && bytes[1] == b' '
+    {
         let mut result = String::with_capacity(text.len() + 1);
         result.push('\\');
         result.push_str(text);
@@ -1820,7 +1872,10 @@ mod tests {
 
     #[test]
     fn test_strong() {
-        assert_eq!(convert_default("<p><strong>bold</strong></p>"), "**bold**\n");
+        assert_eq!(
+            convert_default("<p><strong>bold</strong></p>"),
+            "**bold**\n"
+        );
         assert_eq!(convert_default("<p><b>bold</b></p>"), "**bold**\n");
     }
 
@@ -1877,19 +1932,13 @@ mod tests {
     #[test]
     fn test_code_block() {
         let html = "<pre><code>let x = 1;\nlet y = 2;</code></pre>";
-        assert_eq!(
-            convert_default(html),
-            "```\nlet x = 1;\nlet y = 2;\n```\n"
-        );
+        assert_eq!(convert_default(html), "```\nlet x = 1;\nlet y = 2;\n```\n");
     }
 
     #[test]
     fn test_code_block_with_language() {
         let html = r#"<pre><code class="language-rust">fn main() {}</code></pre>"#;
-        assert_eq!(
-            convert_default(html),
-            "```rust\nfn main() {}\n```\n"
-        );
+        assert_eq!(convert_default(html), "```rust\nfn main() {}\n```\n");
     }
 
     #[test]
@@ -1902,7 +1951,10 @@ mod tests {
 
     #[test]
     fn test_hr() {
-        assert_eq!(convert_default("<p>Before</p><hr><p>After</p>"), "Before\n\n* * *\n\nAfter\n");
+        assert_eq!(
+            convert_default("<p>Before</p><hr><p>After</p>"),
+            "Before\n\n* * *\n\nAfter\n"
+        );
     }
 
     #[test]
@@ -1951,9 +2003,21 @@ mod tests {
         // Test inline formatting inside table cells
         let html = r#"<table><tr><td><strong>Bold</strong></td><td><a href="/url">Link</a></td><td><i>Italic</i></td></tr></table>"#;
         let result = convert_default(html);
-        assert!(result.contains("**Bold**"), "Expected **Bold**, got: {}", result);
-        assert!(result.contains("[Link](/url)"), "Expected [Link](/url), got: {}", result);
-        assert!(result.contains("_Italic_"), "Expected _Italic_, got: {}", result);
+        assert!(
+            result.contains("**Bold**"),
+            "Expected **Bold**, got: {}",
+            result
+        );
+        assert!(
+            result.contains("[Link](/url)"),
+            "Expected [Link](/url), got: {}",
+            result
+        );
+        assert!(
+            result.contains("_Italic_"),
+            "Expected _Italic_, got: {}",
+            result
+        );
     }
 
     #[test]
@@ -1961,7 +2025,11 @@ mod tests {
         // Heading inside a link should emit heading with link inside
         let html = r#"<a href="/page.html"><h4>Heading A</h4><h3>Heading B</h3></a>"#;
         let result = convert_default(html);
-        assert!(result.contains("#### [Heading A](/page.html)"), "got: {}", result);
+        assert!(
+            result.contains("#### [Heading A](/page.html)"),
+            "got: {}",
+            result
+        );
         assert!(result.contains("### Heading B"), "got: {}", result);
     }
 

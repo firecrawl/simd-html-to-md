@@ -1,6 +1,6 @@
 //! SIMD-accelerated byte scanning primitives.
 
-use std::simd::{cmp::SimdPartialEq, Simd};
+use std::simd::{Simd, cmp::SimdPartialEq};
 
 /// Number of lanes for SIMD operations.
 const LANES: usize = 16;
@@ -63,7 +63,7 @@ pub fn find_any_index(haystack: &[u8], needles: &[u8]) -> Option<usize> {
 
         for &needle in needles {
             let needle_vec = SimdVec::splat(needle);
-            let mask = vec.simd_eq(needle_vec).to_bitmask() as u64;
+            let mask = vec.simd_eq(needle_vec).to_bitmask();
             combined_mask |= mask;
         }
 
@@ -107,7 +107,7 @@ pub fn find_amp(bytes: &[u8]) -> Option<usize> {
 #[inline]
 #[allow(dead_code)]
 pub fn find_special(bytes: &[u8]) -> Option<(usize, u8)> {
-    find_any(bytes, &[b'<', b'>', b'&'])
+    find_any(bytes, b"<>&")
 }
 
 #[cfg(test)]

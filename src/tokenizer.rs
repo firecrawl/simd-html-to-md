@@ -127,9 +127,7 @@ impl<'a> Tokenizer<'a> {
         }
 
         // Check for DOCTYPE
-        if tag_content.len() >= 8
-            && tag_content[..8].eq_ignore_ascii_case("!doctype")
-        {
+        if tag_content.len() >= 8 && tag_content[..8].eq_ignore_ascii_case("!doctype") {
             return Some(Token::Doctype(trim_ascii(&tag_content[8..])));
         }
 
@@ -139,14 +137,14 @@ impl<'a> Tokenizer<'a> {
         }
 
         // Check for end tag
-        if tag_content.starts_with('/') {
-            let name = trim_ascii(&tag_content[1..]);
+        if let Some(rest) = tag_content.strip_prefix('/') {
+            let name = trim_ascii(rest);
             return Some(Token::EndTag(name));
         }
 
         // Check for self-closing
-        let (content, is_self_closing) = if tag_content.ends_with('/') {
-            (&tag_content[..tag_content.len() - 1], true)
+        let (content, is_self_closing) = if let Some(stripped) = tag_content.strip_suffix('/') {
+            (stripped, true)
         } else {
             (tag_content, false)
         };
@@ -285,8 +283,8 @@ impl<'a> Tokenizer<'a> {
         }
 
         // Find the tag name (first word)
-        let name_end = simd::find_any_index(content.as_bytes(), TAG_NAME_DELIMS)
-            .unwrap_or(content.len());
+        let name_end =
+            simd::find_any_index(content.as_bytes(), TAG_NAME_DELIMS).unwrap_or(content.len());
 
         let name = &content[..name_end];
         let attrs_str = trim_ascii(&content[name_end..]);
@@ -348,8 +346,8 @@ fn parse_attributes(input: &str) -> Vec<Attribute<'_>> {
         }
 
         // Find attribute name
-        let name_end = simd::find_any_index(remaining.as_bytes(), ATTR_NAME_DELIMS)
-            .unwrap_or(remaining.len());
+        let name_end =
+            simd::find_any_index(remaining.as_bytes(), ATTR_NAME_DELIMS).unwrap_or(remaining.len());
 
         if name_end == 0 {
             // Skip invalid character
@@ -395,11 +393,7 @@ fn parse_attributes(input: &str) -> Vec<Attribute<'_>> {
                     .unwrap_or(remaining.len());
                 let val = &remaining[..end];
                 remaining = &remaining[end..];
-                if val.is_empty() {
-                    None
-                } else {
-                    Some(val)
-                }
+                if val.is_empty() { None } else { Some(val) }
             };
 
             attrs.push(Attribute { name, value });

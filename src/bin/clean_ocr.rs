@@ -118,11 +118,11 @@ fn is_image_line(line: &str) -> bool {
         return false;
     }
     // ![alt](url) possibly followed by whitespace
-    if let Some(paren_start) = s.find("](") {
-        if let Some(paren_end) = s[paren_start + 2..].find(')') {
-            let after = &s[paren_start + 2 + paren_end + 1..].trim();
-            return after.is_empty();
-        }
+    if let Some(paren_start) = s.find("](")
+        && let Some(paren_end) = s[paren_start + 2..].find(')')
+    {
+        let after = &s[paren_start + 2 + paren_end + 1..].trim();
+        return after.is_empty();
     }
     false
 }
@@ -209,20 +209,20 @@ fn clean_inline_html(line: &str) -> String {
     let bytes = line.as_bytes();
 
     while i < bytes.len() {
-        if bytes[i] == b'<' {
-            if let Some(end) = find_tag_end(line, i) {
-                let tag = &line[i..end];
-                // Replace <br> / <br/> with newline, skip other simple tags
-                if tag.starts_with("<br") {
-                    result.push('\n');
-                } else if !tag.starts_with("</") && !tag.contains(' ') {
-                    // Simple opening tag like <p>, <div> — skip
-                } else if tag.starts_with("</") {
-                    // Closing tag — skip
-                }
-                i = end;
-                continue;
+        if bytes[i] == b'<'
+            && let Some(end) = find_tag_end(line, i)
+        {
+            let tag = &line[i..end];
+            // Replace <br> / <br/> with newline, skip other simple tags
+            if tag.starts_with("<br") {
+                result.push('\n');
+            } else if !tag.starts_with("</") && !tag.contains(' ') {
+                // Simple opening tag like <p>, <div> — skip
+            } else if tag.starts_with("</") {
+                // Closing tag — skip
             }
+            i = end;
+            continue;
         }
         result.push(bytes[i] as char);
         i += 1;

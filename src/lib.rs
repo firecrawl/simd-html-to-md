@@ -32,7 +32,7 @@ mod tokenizer;
 
 pub use converter::Options;
 #[doc(hidden)]
-pub use emitter::{escape_markdown, Alignment, TableFormatter};
+pub use emitter::{Alignment, TableFormatter, escape_markdown};
 #[doc(hidden)]
 pub use entities::decode_entities;
 

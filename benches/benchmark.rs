@@ -1,7 +1,7 @@
 //! Benchmarks for HTML to Markdown conversion.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use simd_html_to_md::{decode_entities, escape_markdown, html_to_md, Alignment, TableFormatter};
+use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use simd_html_to_md::{Alignment, TableFormatter, decode_entities, escape_markdown, html_to_md};
 
 fn bench_simple_paragraph(c: &mut Criterion) {
     let html = "<p>Hello world, this is a simple paragraph.</p>";
@@ -102,13 +102,13 @@ fn bench_nested_lists(c: &mut Criterion) {
 </ul>
 "#;
 
-    c.bench_function("nested_lists", |b| {
-        b.iter(|| html_to_md(black_box(html)))
-    });
+    c.bench_function("nested_lists", |b| b.iter(|| html_to_md(black_box(html))));
 }
 
 fn bench_table(c: &mut Criterion) {
-    let mut html = String::from("<table><thead><tr><th>Col1</th><th>Col2</th><th>Col3</th><th>Col4</th></tr></thead><tbody>");
+    let mut html = String::from(
+        "<table><thead><tr><th>Col1</th><th>Col2</th><th>Col3</th><th>Col4</th></tr></thead><tbody>",
+    );
     for i in 0..50 {
         html.push_str(&format!(
             "<tr><td>Row {} Col 1</td><td>Row {} Col 2</td><td>Row {} Col 3</td><td>Row {} Col 4</td></tr>",
@@ -117,17 +117,15 @@ fn bench_table(c: &mut Criterion) {
     }
     html.push_str("</tbody></table>");
 
-    c.bench_function("table_50_rows", |b| {
-        b.iter(|| html_to_md(black_box(&html)))
-    });
+    c.bench_function("table_50_rows", |b| b.iter(|| html_to_md(black_box(&html))));
 }
 
 fn bench_entities(c: &mut Criterion) {
-    let html = "<p>&lt;div&gt; &amp; &quot;quotes&quot; &copy; &reg; &trade; &mdash; &ndash; &nbsp;</p>".repeat(100);
+    let html =
+        "<p>&lt;div&gt; &amp; &quot;quotes&quot; &copy; &reg; &trade; &mdash; &ndash; &nbsp;</p>"
+            .repeat(100);
 
-    c.bench_function("entity_heavy", |b| {
-        b.iter(|| html_to_md(black_box(&html)))
-    });
+    c.bench_function("entity_heavy", |b| b.iter(|| html_to_md(black_box(&html))));
 }
 
 fn bench_code_blocks(c: &mut Criterion) {
@@ -149,8 +147,7 @@ fn bench_code_blocks(c: &mut Criterion) {
 }
 
 fn bench_escape_markdown(c: &mut Criterion) {
-    let text = "This is **bold** & `code` with [links](url) and <tags>!"
-        .repeat(200);
+    let text = "This is **bold** & `code` with [links](url) and <tags>!".repeat(200);
 
     c.bench_function("escape_markdown_special", |b| {
         b.iter(|| escape_markdown(black_box(&text)))

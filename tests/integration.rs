@@ -1,6 +1,6 @@
 //! Integration tests for HTML to Markdown conversion.
 
-use simd_html_to_md::{html_to_md, html_to_md_with_options, Options};
+use simd_html_to_md::{Options, html_to_md, html_to_md_with_options};
 
 #[test]
 fn test_full_document() {
@@ -58,7 +58,10 @@ fn test_full_document() {
     assert!(md.contains("`code`"), "Missing inline code");
     assert!(md.contains("1. Numbered one"), "Missing ordered list item");
     assert!(md.contains("```rust"), "Missing code block with language");
-    assert!(md.contains("> This is a famous quote"), "Missing blockquote");
+    assert!(
+        md.contains("> This is a famous quote"),
+        "Missing blockquote"
+    );
     assert!(md.contains("* * *"), "Missing horizontal rule");
 }
 
@@ -347,7 +350,10 @@ fn test_large_input() {
     let mut html = String::new();
     html.push_str("<div>");
     for i in 0..100 {
-        html.push_str(&format!("<p>Paragraph {} with <strong>bold</strong> and <em>italic</em> text.</p>", i));
+        html.push_str(&format!(
+            "<p>Paragraph {} with <strong>bold</strong> and <em>italic</em> text.</p>",
+            i
+        ));
     }
     html.push_str("</div>");
 
@@ -420,7 +426,8 @@ fn test_custom_skip_tags() {
         ],
         ..Default::default()
     };
-    let html = r#"<p>Content</p><nav><a href="/">Home</a><a href="/about">About</a></nav><p>More</p>"#;
+    let html =
+        r#"<p>Content</p><nav><a href="/">Home</a><a href="/about">About</a></nav><p>More</p>"#;
     let md = html_to_md_with_options(html, options);
     assert!(md.contains("Content"));
     assert!(md.contains("More"));
@@ -529,7 +536,8 @@ fn test_lang_prefix_on_pre() {
 #[test]
 fn test_code_language_priority() {
     // <code> class takes priority over <pre> class
-    let html = r#"<pre class="language-text"><code class="language-rust">fn main() {}</code></pre>"#;
+    let html =
+        r#"<pre class="language-text"><code class="language-rust">fn main() {}</code></pre>"#;
     let md = html_to_md(html);
     assert!(md.contains("```rust"));
 }

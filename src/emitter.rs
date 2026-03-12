@@ -71,10 +71,7 @@ pub(crate) fn escape_markdown_cow(text: &str) -> Cow<'_, str> {
 
 fn find_first_special_scalar(bytes: &[u8]) -> Option<usize> {
     for (i, &b) in bytes.iter().enumerate() {
-        if matches!(
-            b,
-            b'\\' | b'`' | b'*' | b'_' | b'[' | b']' | b'|' | b'~'
-        ) {
+        if matches!(b, b'\\' | b'`' | b'*' | b'_' | b'[' | b']' | b'|' | b'~') {
             return Some(i);
         }
     }
@@ -91,7 +88,9 @@ pub fn escape_code_span(text: &str) -> (String, usize) {
     let wrapper_count = max_consecutive + 1;
 
     // If the text starts or ends with a backtick, we need spaces
-    let needs_space = text.starts_with('`') || text.ends_with('`') || text.starts_with(' ') && text.ends_with(' ');
+    let needs_space = text.starts_with('`')
+        || text.ends_with('`')
+        || text.starts_with(' ') && text.ends_with(' ');
 
     let result = if needs_space {
         format!(" {} ", text)
@@ -196,11 +195,7 @@ pub fn format_code_block(code: &str, language: Option<&str>) -> String {
 /// Determine the fence characters to use for a code block.
 /// Uses ``` unless the code contains ```, then uses ~~~.
 fn determine_fence(code: &str) -> &'static str {
-    if code.contains("```") {
-        "~~~"
-    } else {
-        "```"
-    }
+    if code.contains("```") { "~~~" } else { "```" }
 }
 
 /// Format a blockquote by prefixing each line with `> `.
@@ -615,10 +610,9 @@ fn clean_text_owned(text: &str) -> String {
     }
 
     let mut result = String::with_capacity(text.len());
-    let mut chars = text.chars();
     let mut space_count = 0;
 
-    while let Some(c) = chars.next() {
+    for c in text.chars() {
         if c == ' ' {
             space_count += 1;
         } else if c == '\n' {
@@ -633,7 +627,11 @@ fn clean_text_owned(text: &str) -> String {
             }
             space_count = 0;
         } else {
-            if space_count > 0 && !result.is_empty() && !result.ends_with(' ') && !result.ends_with('\n') {
+            if space_count > 0
+                && !result.is_empty()
+                && !result.ends_with(' ')
+                && !result.ends_with('\n')
+            {
                 result.push(' ');
             }
             space_count = 0;
@@ -760,7 +758,10 @@ mod tests {
     #[test]
     fn test_format_code() {
         assert_eq!(format_code("code"), "`code`");
-        assert_eq!(format_code("code`with`backticks"), "``code`with`backticks``");
+        assert_eq!(
+            format_code("code`with`backticks"),
+            "``code`with`backticks``"
+        );
         assert_eq!(format_code("`start"), "`` `start ``");
     }
 

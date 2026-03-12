@@ -21,9 +21,9 @@
 
 [Blog index](/index)
 
-# The Go Blog [/](/)
+# [The Go Blog](/)
 
-### Godoc: documenting Go code [/godoc-documenting-go-code](/godoc-documenting-go-code)
+### [Godoc: documenting Go code](/godoc-documenting-go-code)
 
 31 March 2011
 

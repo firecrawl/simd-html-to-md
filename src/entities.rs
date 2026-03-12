@@ -83,19 +83,21 @@ fn decode_entity_with_semi(input: &str, semi_pos: usize) -> Option<(&'static str
     let total_len = semi_pos + 2; // +1 for '&', +1 for ';'
 
     // Numeric entity
-    if entity.starts_with('#') {
-        let num_str = &entity[1..];
-        let (radix, num_str) = if num_str.starts_with('x') || num_str.starts_with('X') {
-            (16, &num_str[1..])
+    if let Some(num_str) = entity.strip_prefix('#') {
+        let (radix, num_str) = if let Some(hex) = num_str
+            .strip_prefix('x')
+            .or_else(|| num_str.strip_prefix('X'))
+        {
+            (16, hex)
         } else {
             (10, num_str)
         };
 
-        if let Ok(code_point) = u32::from_str_radix(num_str, radix) {
-            if let Some(c) = char::from_u32(code_point) {
-                // Return a static string for common characters
-                return Some((char_to_static_str(c), total_len));
-            }
+        if let Ok(code_point) = u32::from_str_radix(num_str, radix)
+            && let Some(c) = char::from_u32(code_point)
+        {
+            // Return a static string for common characters
+            return Some((char_to_static_str(c), total_len));
         }
         return None;
     }
@@ -198,14 +200,14 @@ fn decode_named_entity(name: &str) -> Option<&'static str> {
         "curren" => Some("¤"),
 
         // Quotation marks
-        "ldquo" => Some("\u{201C}"),  // "
-        "rdquo" => Some("\u{201D}"),  // "
-        "lsquo" => Some("\u{2018}"),  // '
-        "rsquo" => Some("\u{2019}"),  // '
-        "bdquo" => Some("\u{201E}"),  // „
-        "sbquo" => Some("\u{201A}"),  // ‚
-        "laquo" => Some("\u{00AB}"),  // «
-        "raquo" => Some("\u{00BB}"),  // »
+        "ldquo" => Some("\u{201C}"), // "
+        "rdquo" => Some("\u{201D}"), // "
+        "lsquo" => Some("\u{2018}"), // '
+        "rsquo" => Some("\u{2019}"), // '
+        "bdquo" => Some("\u{201E}"), // „
+        "sbquo" => Some("\u{201A}"), // ‚
+        "laquo" => Some("\u{00AB}"), // «
+        "raquo" => Some("\u{00BB}"), // »
 
         // Dashes and spaces
         "mdash" => Some("—"),
