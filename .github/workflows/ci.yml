@@ -158,11 +158,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Run benchmarks
-        run: cargo bench -- --output-format bencher 2>&1 | tee bench-output.txt
+        run: cargo bench 2>&1 | tee bench-output.txt
 
-      - name: Check for regressions
+      - name: Print results
+        if: always()
         run: |
           echo "=== Benchmark Results ==="
-          grep "time:" bench-output.txt || true
-          echo ""
-          echo "Note: benchmark results are informational. Check for significant regressions manually."
+          grep "time:" bench-output.txt || echo "No timing results found"
