@@ -16,14 +16,14 @@ pub fn escape_markdown(text: &str) -> String {
 pub(crate) fn escape_markdown_cow(text: &str) -> Cow<'_, str> {
     const ESCAPE_SIMD_THRESHOLD: usize = 64;
 
-    // Characters that definitely need escaping in Markdown:
-    // \ ` * _ { } [ ] ( ) # ! | & < >
-    // Characters that only need escaping at line start: + - .
-    // We'll only escape the always-special ones in inline text
+    // Characters that need escaping in Markdown inline text:
+    // \ ` * _ [ ] | ~
+    // Note: #, (), {}, !, &, <, > are NOT escaped (matches Go html-to-markdown).
+    // # only creates headings at the start of a block line, never inside inline text.
     let bytes = text.as_bytes();
 
     // Quick check: scan for any special characters
-    let special = b"\\`*_{}[]()#!|<>&";
+    let special = b"\\`*_[]|~";
     let first_special = if bytes.len() >= ESCAPE_SIMD_THRESHOLD {
         simd::find_any_index(bytes, special)
     } else {
@@ -73,22 +73,7 @@ fn find_first_special_scalar(bytes: &[u8]) -> Option<usize> {
     for (i, &b) in bytes.iter().enumerate() {
         if matches!(
             b,
-            b'\\'
-                | b'`'
-                | b'*'
-                | b'_'
-                | b'{'
-                | b'}'
-                | b'['
-                | b']'
-                | b'('
-                | b')'
-                | b'#'
-                | b'!'
-                | b'|'
-                | b'<'
-                | b'>'
-                | b'&'
+            b'\\' | b'`' | b'*' | b'_' | b'[' | b']' | b'|' | b'~'
         ) {
             return Some(i);
         }
@@ -158,7 +143,12 @@ pub fn format_link(text: &str, url: &str, title: Option<&str>) -> String {
     if let Some(t) = title {
         result.push(' ');
         result.push('"');
-        result.push_str(t);
+        // Escape quotes inside the title
+        if t.contains('"') {
+            result.push_str(&t.replace('"', "\\\""));
+        } else {
+            result.push_str(t);
+        }
         result.push('"');
     }
     result.push(')');
@@ -177,7 +167,11 @@ pub fn format_image(alt: &str, src: &str, title: Option<&str>) -> String {
     if let Some(t) = title {
         result.push(' ');
         result.push('"');
-        result.push_str(t);
+        if t.contains('"') {
+            result.push_str(&t.replace('"', "\\\""));
+        } else {
+            result.push_str(t);
+        }
         result.push('"');
     }
     result.push(')');
@@ -293,12 +287,12 @@ pub fn format_ordered_item(text: &str, number: usize, indent: usize) -> String {
 
 /// Format a horizontal rule.
 pub fn format_hr() -> &'static str {
-    "---"
+    "* * *"
 }
 
 /// Format a line break.
 pub fn format_br() -> &'static str {
-    "  \n"
+    "\n\n"
 }
 
 // Inline formatting is handled in the converter to avoid extra allocations.
@@ -334,46 +328,15 @@ pub enum Alignment {
     Right,
 }
 
-fn append_table_cell(result: &mut String, text: &str, width: usize) {
+fn append_table_cell(result: &mut String, text: &str, _width: usize) {
     result.push(' ');
     result.push_str(text);
-    let pad = width.saturating_sub(text.len());
-    for _ in 0..pad {
-        result.push(' ');
-    }
     result.push(' ');
     result.push('|');
 }
 
-fn append_table_separator_cell(result: &mut String, width: usize, alignment: Alignment) {
-    result.push(' ');
-    match alignment {
-        Alignment::Left => {
-            result.push(':');
-            for _ in 1..width {
-                result.push('-');
-            }
-        }
-        Alignment::Center => {
-            result.push(':');
-            if width > 2 {
-                for _ in 0..(width - 2) {
-                    result.push('-');
-                }
-            }
-            result.push(':');
-        }
-        Alignment::Right => {
-            if width > 1 {
-                for _ in 0..(width - 1) {
-                    result.push('-');
-                }
-            }
-            result.push(':');
-        }
-    }
-    result.push(' ');
-    result.push('|');
+fn append_table_separator_cell(result: &mut String, _width: usize, _alignment: Alignment) {
+    result.push_str(" --- |");
 }
 
 impl TableFormatter {
@@ -395,6 +358,16 @@ impl TableFormatter {
     /// Add a row.
     pub fn add_row(&mut self, row: Vec<String>) {
         self.rows.push(row);
+    }
+
+    /// Check if headers have been set.
+    pub fn has_headers(&self) -> bool {
+        !self.headers.is_empty()
+    }
+
+    /// Get max column count across all rows.
+    pub fn max_columns(&self) -> usize {
+        self.rows.iter().map(|r| r.len()).max().unwrap_or(0)
     }
 
     /// Set alignment for a column.
@@ -472,6 +445,11 @@ fn is_ascii_whitespace_byte(b: u8) -> bool {
 
 /// Normalize whitespace in text (collapse multiple spaces/newlines).
 pub fn normalize_whitespace(text: &str) -> String {
+    normalize_whitespace_inner(text)
+}
+
+#[inline(always)]
+fn normalize_whitespace_inner(text: &str) -> String {
     if text.is_ascii() {
         let mut result = String::with_capacity(text.len());
         let mut last_was_space = false;
@@ -508,7 +486,7 @@ pub fn normalize_whitespace(text: &str) -> String {
 }
 
 /// Trim leading/trailing whitespace and collapse internal whitespace.
-/// Preserves Markdown line breaks (`  \n`).
+/// Preserves Markdown line breaks (`  \n`) and content inside backtick spans.
 pub(crate) fn clean_text_cow(text: &str) -> Cow<'_, str> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -519,7 +497,80 @@ pub(crate) fn clean_text_cow(text: &str) -> Cow<'_, str> {
         return Cow::Borrowed(trimmed);
     }
 
+    // If backticks present, use backtick-aware cleaning
+    if trimmed.as_bytes().contains(&b'`') {
+        return Cow::Owned(clean_text_backtick_aware(trimmed));
+    }
+
     Cow::Owned(clean_text_owned(trimmed))
+}
+
+/// Clean text while preserving content inside backtick code spans verbatim.
+fn clean_text_backtick_aware(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut result = String::with_capacity(text.len());
+    let mut i = 0;
+    let mut segment_start = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            // Clean the segment before the backtick span
+            if i > segment_start {
+                let segment = &text[segment_start..i];
+                let cleaned = clean_text_owned(segment);
+                result.push_str(&cleaned);
+            }
+
+            // Count opening backticks
+            let tick_start = i;
+            while i < bytes.len() && bytes[i] == b'`' {
+                i += 1;
+            }
+            let tick_count = i - tick_start;
+            result.push_str(&text[tick_start..i]);
+
+            // Find matching closing backticks and copy verbatim
+            let span_start = i;
+            let mut found_close = false;
+            while i < bytes.len() {
+                if bytes[i] == b'`' {
+                    let close_start = i;
+                    while i < bytes.len() && bytes[i] == b'`' {
+                        i += 1;
+                    }
+                    if i - close_start == tick_count {
+                        result.push_str(&text[span_start..i]);
+                        found_close = true;
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            if !found_close {
+                result.push_str(&text[span_start..]);
+                return result;
+            }
+            segment_start = i;
+        } else {
+            i += 1;
+        }
+    }
+
+    // Clean remaining segment
+    if segment_start < bytes.len() {
+        let segment = &text[segment_start..];
+        let cleaned = clean_text_owned(segment);
+        let trimmed = cleaned.trim_start();
+        if !trimmed.is_empty() {
+            if !result.is_empty() && !result.ends_with(' ') {
+                result.push(' ');
+            }
+            result.push_str(trimmed);
+        }
+    }
+
+    result
 }
 
 fn clean_text_owned(text: &str) -> String {
@@ -623,8 +674,12 @@ mod tests {
     fn test_escape_markdown() {
         assert_eq!(escape_markdown("hello world"), "hello world");
         assert_eq!(escape_markdown("*bold*"), "\\*bold\\*");
-        assert_eq!(escape_markdown("[link](url)"), "\\[link\\]\\(url\\)");
-        assert_eq!(escape_markdown("# heading"), "\\# heading");
+        assert_eq!(escape_markdown("[link](url)"), "\\[link\\](url)");
+        assert_eq!(escape_markdown("# heading"), "# heading");
+        // Parentheses, braces, !, &, <, > should NOT be escaped
+        assert_eq!(escape_markdown("func(x)"), "func(x)");
+        assert_eq!(escape_markdown("a & b"), "a & b");
+        assert_eq!(escape_markdown("x < y > z"), "x < y > z");
     }
 
     #[test]
@@ -641,6 +696,10 @@ mod tests {
         assert_eq!(
             format_link("text", "url", Some("title")),
             "[text](url \"title\")"
+        );
+        assert_eq!(
+            format_link("text", "url", Some("has \"quotes\"")),
+            "[text](url \"has \\\"quotes\\\"\")"
         );
     }
 
@@ -712,7 +771,7 @@ mod tests {
         table.add_row(vec!["Alice".to_string(), "30".to_string()]);
         table.add_row(vec!["Bob".to_string(), "25".to_string()]);
 
-        let expected = "| Name  | Age |\n| :---- | :-- |\n| Alice | 30  |\n| Bob   | 25  |";
+        let expected = "| Name | Age |\n| --- | --- |\n| Alice | 30 |\n| Bob | 25 |";
         assert_eq!(table.format(), expected);
     }
 

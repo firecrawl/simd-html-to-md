@@ -52,6 +52,8 @@ pub struct Tokenizer<'a> {
     input: &'a str,
     bytes: &'a [u8],
     pos: usize,
+    /// Pending end tag to emit (from raw text element handling).
+    pending_end_tag: Option<&'a str>,
 }
 
 impl<'a> Tokenizer<'a> {
@@ -61,11 +63,17 @@ impl<'a> Tokenizer<'a> {
             input,
             bytes: input.as_bytes(),
             pos: 0,
+            pending_end_tag: None,
         }
     }
 
     /// Get the next token from the input.
     pub fn next_token(&mut self) -> Option<Token<'a>> {
+        // Return pending end tag from raw text element handling.
+        if let Some(name) = self.pending_end_tag.take() {
+            return Some(Token::EndTag(name));
+        }
+
         if self.pos >= self.bytes.len() {
             return None;
         }
@@ -148,6 +156,11 @@ impl<'a> Tokenizer<'a> {
 
         if is_self_closing || is_void_element(tag.name) {
             Some(Token::SelfClosingTag(tag))
+        } else if is_raw_text_element(tag.name) {
+            let name = tag.name;
+            self.skip_raw_text_content(name);
+            self.pending_end_tag = Some(name);
+            Some(Token::StartTag(tag))
         } else {
             Some(Token::StartTag(tag))
         }
@@ -214,6 +227,50 @@ impl<'a> Tokenizer<'a> {
             let content = remaining;
             self.pos = self.bytes.len();
             Some(Token::Text(content))
+        }
+    }
+
+    /// Skip content of a raw text element (script, style, noscript).
+    /// Scans forward for the matching `</tagname>` and advances past it.
+    fn skip_raw_text_content(&mut self, tag_name: &str) {
+        let tag_name_len = tag_name.len();
+
+        loop {
+            let remaining = &self.bytes[self.pos..];
+            let lt_offset = match simd::find_lt(remaining) {
+                Some(offset) => offset,
+                None => {
+                    self.pos = self.bytes.len();
+                    return;
+                }
+            };
+
+            let lt_pos = self.pos + lt_offset;
+
+            // Check for </tagname> (case-insensitive)
+            let name_start = lt_pos + 2;
+            let name_end = name_start + tag_name_len;
+
+            if name_end <= self.bytes.len()
+                && self.bytes[lt_pos + 1] == b'/'
+                && self.input[name_start..name_end].eq_ignore_ascii_case(tag_name)
+            {
+                // Character after tag name must be '>' or whitespace
+                if name_end == self.bytes.len()
+                    || self.bytes[name_end] == b'>'
+                    || self.bytes[name_end].is_ascii_whitespace()
+                {
+                    // Found the closing tag — advance past '>'
+                    if let Some(gt_rel) = simd::find_gt(&self.bytes[lt_pos..]) {
+                        self.pos = lt_pos + gt_rel + 1;
+                    } else {
+                        self.pos = self.bytes.len();
+                    }
+                    return;
+                }
+            }
+
+            self.pos = lt_pos + 1;
         }
     }
 
@@ -371,6 +428,13 @@ fn is_void_element(name: &str) -> bool {
         || name.eq_ignore_ascii_case("source")
         || name.eq_ignore_ascii_case("track")
         || name.eq_ignore_ascii_case("wbr")
+}
+
+/// Check if an element is a raw text element (content is not parsed as HTML).
+fn is_raw_text_element(name: &str) -> bool {
+    name.eq_ignore_ascii_case("script")
+        || name.eq_ignore_ascii_case("style")
+        || name.eq_ignore_ascii_case("noscript")
 }
 
 #[cfg(test)]

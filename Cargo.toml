@@ -15,3 +15,7 @@ criterion = "0.5"
 [[bench]]
 name = "benchmark"
 harness = false
+
+[[bench]]
+name = "realworld"
+harness = false

@@ -45,7 +45,7 @@ pub use entities::decode_entities;
 ///
 /// let html = "<p>Hello <em>world</em>!</p>";
 /// let md = html_to_md(html);
-/// assert_eq!(md, "Hello *world*\\!\n");
+/// assert_eq!(md, "Hello _world_!\n");
 /// ```
 pub fn html_to_md(html: &str) -> String {
     converter::convert(html, &Options::default())
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn test_formatting() {
         assert!(html_to_md("<strong>bold</strong>").contains("**bold**"));
-        assert!(html_to_md("<em>italic</em>").contains("*italic*"));
+        assert!(html_to_md("<em>italic</em>").contains("_italic_"));
         assert!(html_to_md("<del>strike</del>").contains("~~strike~~"));
     }
 
@@ -166,8 +166,8 @@ mod tests {
     fn test_entities() {
         let html = "<p>&lt;tag&gt;</p>";
         let md = html_to_md(html);
-        // The < and > are decoded then escaped for markdown
-        assert!(md.contains("<") || md.contains("\\<"));
+        // The < and > are decoded but NOT escaped (matching Go behavior)
+        assert!(md.contains("<tag>"));
     }
 
     #[test]

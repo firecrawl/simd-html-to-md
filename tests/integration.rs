@@ -50,7 +50,7 @@ fn test_full_document() {
     // Check all major elements are converted
     assert!(md.contains("# Main Title"), "Missing h1");
     assert!(md.contains("**bold**"), "Missing bold");
-    assert!(md.contains("*italic*"), "Missing italic");
+    assert!(md.contains("_italic_"), "Missing italic");
     assert!(md.contains("[link](https://example.com)"), "Missing link");
     assert!(md.contains("![A photo](photo.jpg)"), "Missing image");
     assert!(md.contains("## Section 1"), "Missing h2");
@@ -59,7 +59,7 @@ fn test_full_document() {
     assert!(md.contains("1. Numbered one"), "Missing ordered list item");
     assert!(md.contains("```rust"), "Missing code block with language");
     assert!(md.contains("> This is a famous quote"), "Missing blockquote");
-    assert!(md.contains("---"), "Missing horizontal rule");
+    assert!(md.contains("* * *"), "Missing horizontal rule");
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn test_table() {
     assert!(md.contains("| Bob"));
     assert!(md.contains("| San Francisco"));
     // Check for separator row
-    assert!(md.contains("|---") || md.contains("| :--"));
+    assert!(md.contains("| --- |"));
 }
 
 #[test]
@@ -214,8 +214,8 @@ fn test_br_tag() {
     // Should have proper line break
     assert!(md.contains("Line one"));
     assert!(md.contains("Line two"));
-    // Two spaces before newline for Markdown line break
-    assert!(md.contains("  \n"));
+    // <br> produces paragraph break (double newline) matching Go behavior
+    assert!(md.contains("\n\n"));
 }
 
 #[test]
@@ -224,7 +224,7 @@ fn test_hr_tag() {
     let md = html_to_md(html);
 
     assert!(md.contains("Before"));
-    assert!(md.contains("---"));
+    assert!(md.contains("* * *"));
     assert!(md.contains("After"));
 }
 
@@ -308,7 +308,7 @@ fn test_void_elements() {
 
     let html = r#"<hr>"#;
     let md = html_to_md(html);
-    assert!(md.contains("---"));
+    assert!(md.contains("* * *"));
 }
 
 #[test]
@@ -356,5 +356,240 @@ fn test_large_input() {
     assert!(md.contains("Paragraph 0"));
     assert!(md.contains("Paragraph 99"));
     assert!(md.contains("**bold**"));
-    assert!(md.contains("*italic*"));
+    assert!(md.contains("_italic_"));
+}
+
+// ---- New feature tests ----
+
+#[test]
+fn test_script_stripping() {
+    let html = r#"<p>Before</p><script>alert('xss')</script><p>After</p>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("Before"));
+    assert!(md.contains("After"));
+    assert!(!md.contains("alert"));
+    assert!(!md.contains("xss"));
+}
+
+#[test]
+fn test_script_with_angle_brackets() {
+    // Script content with < > that would confuse a naive parser
+    let html = r#"<p>Before</p><script>if (a < b && c > d) { alert('hi'); }</script><p>After</p>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("Before"));
+    assert!(md.contains("After"));
+    assert!(!md.contains("alert"));
+}
+
+#[test]
+fn test_style_stripping() {
+    let html = r#"<p>Before</p><style>body { color: red; }</style><p>After</p>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("Before"));
+    assert!(md.contains("After"));
+    assert!(!md.contains("color"));
+    assert!(!md.contains("red"));
+}
+
+#[test]
+fn test_noscript_stripping() {
+    let html = r#"<p>Before</p><noscript>Enable JavaScript</noscript><p>After</p>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("Before"));
+    assert!(md.contains("After"));
+    assert!(!md.contains("Enable JavaScript"));
+}
+
+#[test]
+fn test_script_case_insensitive() {
+    let html = r#"<p>Before</p><SCRIPT>alert('xss')</SCRIPT><p>After</p>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("Before"));
+    assert!(md.contains("After"));
+    assert!(!md.contains("alert"));
+}
+
+#[test]
+fn test_custom_skip_tags() {
+    let options = Options {
+        skip_tags: vec![
+            "script".to_string(),
+            "style".to_string(),
+            "noscript".to_string(),
+            "nav".to_string(),
+        ],
+        ..Default::default()
+    };
+    let html = r#"<p>Content</p><nav><a href="/">Home</a><a href="/about">About</a></nav><p>More</p>"#;
+    let md = html_to_md_with_options(html, options);
+    assert!(md.contains("Content"));
+    assert!(md.contains("More"));
+    assert!(!md.contains("Home"));
+    assert!(!md.contains("About"));
+}
+
+#[test]
+fn test_empty_skip_tags() {
+    // With empty skip_tags, script content is still stripped at tokenizer level
+    // (raw text element handling) but converter won't skip anything extra
+    let options = Options {
+        skip_tags: vec![],
+        ..Default::default()
+    };
+    let html = r#"<p>Before</p><script>alert('hi')</script><p>After</p>"#;
+    let md = html_to_md_with_options(html, options);
+    assert!(md.contains("Before"));
+    assert!(md.contains("After"));
+    // Script content still stripped by tokenizer raw text handling
+    assert!(!md.contains("alert"));
+}
+
+#[test]
+fn test_gutter_stripping() {
+    let html = r#"
+<pre><code class="language-js"><table>
+<tr><td class="gutter"><pre>1
+2
+3</pre></td><td class="code"><pre>const x = 1;
+let y = 2;
+return x + y;</pre></td></tr>
+</table></code></pre>
+"#;
+    let md = html_to_md(html);
+    assert!(md.contains("const x = 1;"));
+    assert!(!md.contains("gutter"));
+    // Line numbers from gutter should not appear
+}
+
+#[test]
+fn test_line_numbers_stripping() {
+    let html = r#"
+<pre><code class="language-python"><div class="line-numbers-wrapper">
+<span class="line-number">1</span>
+<span class="line-number">2</span>
+</div>def hello():
+    print("world")</code></pre>
+"#;
+    let md = html_to_md(html);
+    assert!(md.contains("def hello():"));
+    // Line number content should be stripped
+    assert!(!md.contains("line-number"));
+}
+
+#[test]
+fn test_div_wrapped_code_lines() {
+    // Syntax highlighters often wrap lines in divs
+    let html = r#"
+<pre><code class="language-js"><div class="line">const x = 1;</div><div class="line">let y = 2;</div><div class="line">return x + y;</div></code></pre>
+"#;
+    let md = html_to_md(html);
+    assert!(md.contains("```js"));
+    assert!(md.contains("const x = 1;\n"));
+    assert!(md.contains("let y = 2;\n"));
+    assert!(md.contains("return x + y;"));
+}
+
+#[test]
+fn test_token_line_code_blocks() {
+    // Docusaurus/Prism style with token-line divs
+    let html = r#"
+<pre><code class="language-rust"><div class="token-line"><span class="token keyword">fn</span> main() {</div><div class="token-line">    println!("hello");</div><div class="token-line">}</div></code></pre>
+"#;
+    let md = html_to_md(html);
+    assert!(md.contains("```rust"));
+    assert!(md.contains("fn main() {\n"));
+    assert!(md.contains("    println!(\"hello\");\n"));
+}
+
+#[test]
+fn test_lang_prefix_on_code() {
+    let html = r#"<pre><code class="lang-javascript">var x = 1;</code></pre>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("```javascript"));
+    assert!(md.contains("var x = 1;"));
+}
+
+#[test]
+fn test_language_prefix_on_pre() {
+    // Language class on <pre> instead of <code>
+    let html = r#"<pre class="language-python"><code>def foo(): pass</code></pre>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("```python"));
+    assert!(md.contains("def foo(): pass"));
+}
+
+#[test]
+fn test_lang_prefix_on_pre() {
+    let html = r#"<pre class="lang-go"><code>func main() {}</code></pre>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("```go"));
+    assert!(md.contains("func main() {}"));
+}
+
+#[test]
+fn test_code_language_priority() {
+    // <code> class takes priority over <pre> class
+    let html = r#"<pre class="language-text"><code class="language-rust">fn main() {}</code></pre>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("```rust"));
+}
+
+#[test]
+fn test_skip_to_content_link() {
+    let html = r##"<a href="#main-content">Skip to Content</a><h1>Title</h1>"##;
+    let md = html_to_md(html);
+    assert!(!md.contains("Skip to Content"));
+    assert!(md.contains("# Title"));
+}
+
+#[test]
+fn test_skip_to_main_content_link() {
+    let html = r##"<a href="#content">Skip to Main Content</a><p>Body</p>"##;
+    let md = html_to_md(html);
+    assert!(!md.contains("Skip to Main Content"));
+    assert!(md.contains("Body"));
+}
+
+#[test]
+fn test_skip_to_navigation_link() {
+    let html = r##"<a href="#nav">Skip to Navigation</a><p>Content</p>"##;
+    let md = html_to_md(html);
+    assert!(!md.contains("Skip to Navigation"));
+    assert!(md.contains("Content"));
+}
+
+#[test]
+fn test_normal_anchor_link_preserved() {
+    // Non-skip-to links with # should be preserved
+    let html = r##"<a href="#section-2">Section 2</a>"##;
+    let md = html_to_md(html);
+    assert!(md.contains("[Section 2](#section-2)"));
+}
+
+#[test]
+fn test_normal_external_link_preserved() {
+    // External links should never be stripped
+    let html = r#"<a href="https://example.com">Skip to Content</a>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("[Skip to Content](https://example.com)"));
+}
+
+#[test]
+fn test_multiple_scripts_stripped() {
+    let html = r#"<p>A</p><script>one()</script><p>B</p><script>two()</script><p>C</p>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("A"));
+    assert!(md.contains("B"));
+    assert!(md.contains("C"));
+    assert!(!md.contains("one"));
+    assert!(!md.contains("two"));
+}
+
+#[test]
+fn test_script_with_attributes() {
+    let html = r#"<p>Before</p><script type="text/javascript" src="app.js">var x = 1;</script><p>After</p>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("Before"));
+    assert!(md.contains("After"));
+    assert!(!md.contains("var x"));
 }
