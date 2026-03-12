@@ -157,8 +157,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run benchmarks
-        run: cargo bench 2>&1 | tee bench-output.txt
+      - name: Run benchmarks (quick)
+        run: cargo bench --bench realworld -- --warm-up-time 1 --measurement-time 3 --sample-size 10 2>&1 | tee bench-output.txt
 
       - name: Print results
         if: always()
