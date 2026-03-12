@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "abi/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Format check
+        run: cargo fmt -- --check
+
+      - name: Tests
+        run: cargo test
+
+      - name: Doc tests
+        run: cargo test --doc
+
+  # Verify rust-output.md files are up to date (catch quality drift)
+  output-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Regenerate outputs
+        run: cargo run --example generate_rust_output
+
+      - name: Check for drift
+        run: |
+          if ! git diff --quiet testdata/; then
+            echo "::error::rust-output.md files are out of date. Run 'cargo +nightly run --example generate_rust_output' and commit."
+            git diff --stat testdata/
+            git diff testdata/
+            exit 1
+          fi
+          echo "All outputs up to date."
+
+  # Track word coverage vs Go output across test cases
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Regenerate outputs
+        run: cargo run --example generate_rust_output
+
+      - name: Compare word coverage vs Go
+        run: |
+          total_go_words=0
+          total_missing=0
+          total_go_bytes=0
+          total_rust_bytes=0
+          failures=""
+
+          for go_file in $(find testdata -name "go-output.md"); do
+            dir=$(dirname "$go_file")
+            rust_file="$dir/rust-output.md"
+            [ -f "$rust_file" ] || continue
+
+            go_bytes=$(wc -c < "$go_file")
+            rust_bytes=$(wc -c < "$rust_file")
+            total_go_bytes=$((total_go_bytes + go_bytes))
+            total_rust_bytes=$((total_rust_bytes + rust_bytes))
+
+            # Extract words, compare
+            go_words=$(cat "$go_file" | tr -cs 'A-Za-z0-9' '\n' | sort -u | grep -c '.')
+            missing=$(comm -23 \
+              <(cat "$go_file" | tr -cs 'A-Za-z0-9' '\n' | sort -u) \
+              <(cat "$rust_file" | tr -cs 'A-Za-z0-9' '\n' | sort -u) | grep -c '.' || true)
+
+            total_go_words=$((total_go_words + go_words))
+            total_missing=$((total_missing + missing))
+
+            if [ "$missing" -gt 0 ]; then
+              coverage=$(echo "scale=3; 1 - $missing / $go_words" | bc)
+              test_name=${dir#testdata/}
+              echo "::warning::$test_name: word coverage $coverage ($missing/$go_words words missing)"
+
+              # Fail if any test drops below 90% word coverage
+              threshold=$(echo "$missing * 10 > $go_words" | bc)
+              if [ "$threshold" -eq 1 ]; then
+                failures="$failures $test_name"
+              fi
+            fi
+          done
+
+          overall=$(echo "scale=4; 1 - $total_missing / $total_go_words" | bc)
+          savings=$((total_go_bytes - total_rust_bytes))
+          echo ""
+          echo "=== Quality Summary ==="
+          echo "Overall word coverage: $overall ($total_missing/$total_go_words words missing)"
+          echo "Total Go bytes: $total_go_bytes"
+          echo "Total Rust bytes: $total_rust_bytes"
+          echo "Token savings: $savings bytes ($(echo "scale=1; $savings * 100 / $total_go_bytes" | bc)%)"
+
+          if [ -n "$failures" ]; then
+            echo "::error::Word coverage below 90% for:$failures"
+            exit 1
+          fi
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run benchmarks
+        run: cargo bench -- --output-format bencher 2>&1 | tee bench-output.txt
+
+      - name: Check for regressions
+        run: |
+          echo "=== Benchmark Results ==="
+          grep "time:" bench-output.txt || true
+          echo ""
+          echo "Note: benchmark results are informational. Check for significant regressions manually."
