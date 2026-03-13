@@ -108,8 +108,21 @@ impl<'a> Tokenizer<'a> {
         let start = self.pos;
         let remaining = &self.bytes[self.pos..];
 
-        // Find the closing '>' (skip '>' inside quoted attribute values)
-        let gt_offset = match find_tag_close(remaining) {
+        // Use quote-aware scanning only for start tags (not comments,
+        // doctypes, CDATA, or end tags). Comments may contain apostrophes
+        // like "don't" that would be misinterpreted as quote delimiters.
+        let needs_quote_aware = remaining.len() > 1
+            && remaining[1] != b'!'
+            && remaining[1] != b'?'
+            && remaining[1] != b'/';
+
+        let gt_offset = if needs_quote_aware {
+            find_tag_close(remaining)
+        } else {
+            simd::find_gt(remaining)
+        };
+
+        let gt_offset = match gt_offset {
             Some(offset) => offset,
             None => {
                 // Malformed: no closing '>', treat as text
@@ -627,6 +640,16 @@ mod tests {
             assert_eq!(tag.get_attr("class"), Some("a>b"));
         }
         assert!(matches!(&tokens[1], Token::Text("text")));
+    }
+
+    #[test]
+    fn test_comment_with_apostrophe() {
+        // Apostrophe in comments must not be treated as a quote delimiter
+        let html = "<!--don't remove this--><p>text</p>";
+        let tokens: Vec<_> = Tokenizer::new(html).collect();
+        assert!(matches!(&tokens[0], Token::Comment("don't remove this")));
+        assert!(matches!(&tokens[1], Token::StartTag(tag) if tag.name == "p"));
+        assert!(matches!(&tokens[2], Token::Text("text")));
     }
 
     #[test]
