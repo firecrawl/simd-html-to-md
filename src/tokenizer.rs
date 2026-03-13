@@ -108,8 +108,8 @@ impl<'a> Tokenizer<'a> {
         let start = self.pos;
         let remaining = &self.bytes[self.pos..];
 
-        // Find the closing '>'
-        let gt_offset = match simd::find_gt(remaining) {
+        // Find the closing '>' (skip '>' inside quoted attribute values)
+        let gt_offset = match find_tag_close(remaining) {
             Some(offset) => offset,
             None => {
                 // Malformed: no closing '>', treat as text
@@ -424,6 +424,44 @@ fn is_void_element(name: &str) -> bool {
         || name.eq_ignore_ascii_case("wbr")
 }
 
+/// Find the closing `>` of a tag, skipping `>` inside quoted attribute values.
+///
+/// Tailwind CSS classes like `[&amp;>span]:px-6` contain literal `>` characters
+/// inside quoted attribute values. This function respects quoted strings so that
+/// only `>` outside quotes is treated as the tag close.
+fn find_tag_close(bytes: &[u8]) -> Option<usize> {
+    let mut pos = 0;
+    loop {
+        let remaining = &bytes[pos..];
+        match simd::find_any_index(remaining, b">\"'") {
+            None => return None,
+            Some(offset) => {
+                let abs = pos + offset;
+                match bytes[abs] {
+                    b'>' => return Some(abs),
+                    b'"' => {
+                        let after = abs + 1;
+                        if let Some(end) = simd::find_char(&bytes[after..], b'"') {
+                            pos = after + end + 1;
+                        } else {
+                            return None;
+                        }
+                    }
+                    b'\'' => {
+                        let after = abs + 1;
+                        if let Some(end) = simd::find_char(&bytes[after..], b'\'') {
+                            pos = after + end + 1;
+                        } else {
+                            return None;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+}
+
 /// Check if an element is a raw text element (content is not parsed as HTML).
 fn is_raw_text_element(name: &str) -> bool {
     name.eq_ignore_ascii_case("script")
@@ -565,5 +603,44 @@ mod tests {
         let token = tok.next().unwrap();
         // Should treat the lone '<' as text
         assert!(matches!(token, Token::Text("<")));
+    }
+
+    #[test]
+    fn test_gt_in_quoted_attribute() {
+        // Tailwind CSS classes with > inside quoted attribute values
+        let html = r#"<button class="[&amp;>span]:px-6 text-label">Click</button>"#;
+        let tokens: Vec<_> = Tokenizer::new(html).collect();
+        assert!(matches!(&tokens[0], Token::StartTag(tag) if tag.name == "button"));
+        if let Token::StartTag(tag) = &tokens[0] {
+            assert_eq!(tag.get_attr("class"), Some("[&amp;>span]:px-6 text-label"));
+        }
+        assert!(matches!(&tokens[1], Token::Text("Click")));
+        assert!(matches!(&tokens[2], Token::EndTag("button")));
+    }
+
+    #[test]
+    fn test_gt_in_single_quoted_attribute() {
+        let html = "<div class='a>b'>text</div>";
+        let tokens: Vec<_> = Tokenizer::new(html).collect();
+        assert!(matches!(&tokens[0], Token::StartTag(tag) if tag.name == "div"));
+        if let Token::StartTag(tag) = &tokens[0] {
+            assert_eq!(tag.get_attr("class"), Some("a>b"));
+        }
+        assert!(matches!(&tokens[1], Token::Text("text")));
+    }
+
+    #[test]
+    fn test_multiple_gt_in_attributes() {
+        let html = r#"<a href="x" class="[&amp;>*]:rel [&amp;>div]:flex">Link</a>"#;
+        let tokens: Vec<_> = Tokenizer::new(html).collect();
+        assert!(matches!(&tokens[0], Token::StartTag(tag) if tag.name == "a"));
+        if let Token::StartTag(tag) = &tokens[0] {
+            assert_eq!(tag.get_attr("href"), Some("x"));
+            assert_eq!(
+                tag.get_attr("class"),
+                Some("[&amp;>*]:rel [&amp;>div]:flex")
+            );
+        }
+        assert!(matches!(&tokens[1], Token::Text("Link")));
     }
 }

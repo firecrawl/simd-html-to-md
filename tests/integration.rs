@@ -643,3 +643,27 @@ fn test_image_src_entity_decoding() {
     assert!(md.contains("/img?w=100&h=200"));
     assert!(!md.contains("&amp;"));
 }
+
+#[test]
+fn test_gt_in_tailwind_class_attribute() {
+    // Tailwind CSS classes like [&>span]:px-6 contain > inside quoted attribute values.
+    // The tokenizer must not treat them as tag close.
+    let html = r#"<a href="https://example.com"><button class="[&amp;>span]:px-6 flex items-center button-primary [&amp;>*]:relative text-label-medium" type="button">Click me</button></a>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("[Click me](https://example.com)"));
+    // CSS class names should NOT appear in the output
+    assert!(!md.contains("button-primary"));
+    assert!(!md.contains("text-label-medium"));
+    assert!(!md.contains("items-center"));
+}
+
+#[test]
+fn test_gt_in_attribute_does_not_leak() {
+    // Multiple buttons with > in class attributes inside links
+    let html = r#"<a href="/a"><button class="[&amp;>*]:rel text-lg">A</button></a> <a href="/b"><button class="[&amp;>div]:flex">B</button></a>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("[A](/a)"));
+    assert!(md.contains("[B](/b)"));
+    assert!(!md.contains(":rel"));
+    assert!(!md.contains(":flex"));
+}
