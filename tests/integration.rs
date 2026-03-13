@@ -658,6 +658,31 @@ fn test_gt_in_tailwind_class_attribute() {
 }
 
 #[test]
+fn test_newlines_escaped_in_link_text() {
+    // <br> inside link text should produce escaped newlines, not bare newlines
+    // which would break the markdown link syntax.
+    let html = r#"<a href="https://example.com">Line one<br>Line two</a>"#;
+    let md = html_to_md(html);
+    assert!(md.contains(r"[Line one\"));
+    assert!(md.contains("Line two](https://example.com)"));
+    // Must NOT have a bare newline breaking the link
+    assert!(!md.contains("[Line one\nLine two]"));
+}
+
+#[test]
+fn test_newlines_escaped_in_link_with_block_elements() {
+    // Block elements like <p> and <div> inside links should not break the link
+    let html = r#"<a href="/url"><p>First paragraph</p><p>Second paragraph</p></a>"#;
+    let md = html_to_md(html);
+    // Link must stay intact — both paragraphs inside one [...](...) link
+    assert!(md.contains("First paragraph"));
+    assert!(md.contains("Second paragraph"));
+    assert!(md.contains("](/url)"));
+    // Must NOT have a bare newline breaking the link
+    assert!(!md.contains("[First paragraph\nSecond"));
+}
+
+#[test]
 fn test_gt_in_attribute_does_not_leak() {
     // Multiple buttons with > in class attributes inside links
     let html = r#"<a href="/a"><button class="[&amp;>*]:rel text-lg">A</button></a> <a href="/b"><button class="[&amp;>div]:flex">B</button></a>"#;
