@@ -183,9 +183,12 @@ Disassembling the now-less-obfuscated dump reveals that one of the addresses has
 
  Run code snippet
           Hide results
-        Expand snippetProblem with `<pre>` is it modifies whitespace processing
+        
+Expand snippet
+Problem with `<pre>` is it modifies whitespace processing
     as well: all spaces are preserved, and wrapping is switched off. Unless
     there's a way to switch this off?
+
 
 **Use the `<textarea>` element to share code**, like so:
 
@@ -490,4 +493,5 @@ class HelloMessage extends React.Component {
 root.render(<HelloMessage name="Taylor" />);
 ```
 
-ResultHello Taylor
+Result
+Hello Taylor

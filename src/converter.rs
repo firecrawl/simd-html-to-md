@@ -104,6 +104,8 @@ struct Context<'a> {
     just_opened_inline: bool,
     /// Whether an inline format marker was just closed (for trailing whitespace addition).
     just_closed_inline: bool,
+    /// Pending inline space: whitespace-only text was seen; emit a space before next content.
+    pending_space: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -206,6 +208,7 @@ impl<'a> Context<'a> {
             code_skip_depth: 0,
             just_opened_inline: false,
             just_closed_inline: false,
+            pending_space: false,
         }
     }
 
@@ -667,9 +670,8 @@ fn process_start_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>, options: &Options
             }
         }
 
-        // Div/span - just containers, process content
+        // Block containers: ensure content separation at boundaries
         TagKind::Div
-        | TagKind::Span
         | TagKind::Section
         | TagKind::Article
         | TagKind::Header
@@ -677,8 +679,11 @@ fn process_start_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>, options: &Options
         | TagKind::Main
         | TagKind::Aside
         | TagKind::Nav => {
-            // These are just containers, no special handling
+            ensure_block_boundary(ctx);
         }
+
+        // Span is inline, no special handling
+        TagKind::Span => {}
 
         _ => {
             // Unknown tag, ignore
@@ -1117,6 +1122,18 @@ fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
             }
         }
 
+        // Block containers: ensure content separation at boundaries
+        TagKind::Div
+        | TagKind::Section
+        | TagKind::Article
+        | TagKind::Header
+        | TagKind::Footer
+        | TagKind::Main
+        | TagKind::Aside
+        | TagKind::Nav => {
+            ensure_block_boundary(ctx);
+        }
+
         _ => {}
     }
 }
@@ -1249,7 +1266,14 @@ fn process_text<'a>(ctx: &mut Context<'a>, text: &'a str) {
         && ctx.table.as_ref().is_none_or(|table| !table.in_cell)
         && is_ascii_whitespace_only(text)
     {
-        // Ignore whitespace-only text between block elements.
+        // Only skip whitespace at block boundaries (output ends with newline or is empty).
+        // Preserve inline whitespace between content (e.g., "text <!-- --> more text").
+        if ctx.output.is_empty() || ctx.output.ends_with('\n') || ctx.just_emitted_block {
+            return;
+        }
+        // Set pending space flag — the space will be emitted when next content arrives.
+        // This avoids trailing spaces when a block boundary follows the whitespace.
+        ctx.pending_space = true;
         return;
     }
 
@@ -1498,6 +1522,45 @@ fn is_code_block_element(kind: TagKind) -> bool {
     )
 }
 
+/// Ensure a block boundary (newline) exists in the output when a block-level
+/// container opens or closes.  This prevents text from adjacent block elements
+/// being concatenated (e.g., `</div><div>` should not join words).
+fn ensure_block_boundary(ctx: &mut Context) {
+    // Clear any pending inline space — block boundary supersedes it
+    ctx.pending_space = false;
+
+    // Don't add boundaries inside special contexts that manage their own spacing
+    if ctx.in_code_block || ctx.in_code || ctx.heading_level > 0 {
+        return;
+    }
+    // Inside a paragraph, mark a break in pending_text
+    if ctx.in_paragraph && !ctx.pending_text.is_empty() {
+        if !ctx.pending_text.ends_with('\n') {
+            ctx.pending_text.push('\n');
+        }
+        return;
+    }
+    // Inside a list item, add a break
+    if let Some(content) = ctx.list_item_stack.last_mut() {
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        return;
+    }
+    // Inside a link, add a space (newlines would break the link syntax)
+    if ctx.in_link {
+        if !ctx.link_text.is_empty() && !ctx.link_text.ends_with(' ') {
+            ctx.link_text.push(' ');
+        }
+        return;
+    }
+    // Bare output: ensure newline
+    if !ctx.output.is_empty() && !ctx.output.ends_with('\n') {
+        ctx.output.push('\n');
+        ctx.just_emitted_block = false;
+    }
+}
+
 /// Get the last character in the current context buffer.
 fn last_char_in_buffer(ctx: &Context) -> Option<char> {
     if ctx.heading_level > 0 {
@@ -1678,6 +1741,20 @@ fn should_append_text(ctx: &Context, text: &str) -> bool {
 }
 
 fn append_to_context<'a>(ctx: &mut Context<'a>, text: &str) {
+    // Flush any pending inline space before new content
+    if ctx.pending_space {
+        ctx.pending_space = false;
+        // Only emit the space if the target buffer doesn't already end with whitespace
+        if let Some(ch) = last_char_in_buffer(ctx)
+            && !ch.is_whitespace()
+        {
+            append_to_context_inner(ctx, " ");
+        }
+    }
+    append_to_context_inner(ctx, text);
+}
+
+fn append_to_context_inner<'a>(ctx: &mut Context<'a>, text: &str) {
     // Heading takes priority over link so that headings inside links
     // can be flattened to bold text by the heading close handler.
     if ctx.heading_level > 0 {

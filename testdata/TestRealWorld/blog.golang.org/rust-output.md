@@ -1,4 +1,7 @@
-[The Go Programming Language](//golang.org/) [Go](//golang.org/) [▽](#) [Documents](//golang.org/doc/) [Packages](//golang.org/pkg/) [The Project](//golang.org/project/) [Help](//golang.org/help/) [Blog](/) submit search
+[The Go Programming Language](//golang.org/)
+[Go](//golang.org/)
+[▽](#)
+[Documents](//golang.org/doc/) [Packages](//golang.org/pkg/) [The Project](//golang.org/project/) [Help](//golang.org/help/) [Blog](/) submit search
 
 #### Next article
 

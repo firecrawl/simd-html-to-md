@@ -1,11 +1,19 @@
 ...
-[The Go Programming Language](/) [Go](/) [▽](#) [Documents](/doc/) [Packages](/pkg/) [The Project](/project/) [Help](/help/) [Blog](/blog/) [Play](http://play.golang.org/ "Show Go Playground") submit searchpackage main
+[The Go Programming Language](/)
+[Go](/)
+[▽](#)
+[Documents](/doc/) [Packages](/pkg/) [The Project](/project/) [Help](/help/) [Blog](/blog/) [Play](http://play.golang.org/ "Show Go Playground") submit search
+package main
 
 import "fmt"
 
 func main() {
 	fmt.Println("Hello, 世界")
-}RunFormatSharePop-outTry Go// You can edit this code!
+}
+Run Format Share
+Pop-out
+Try Go
+// You can edit this code!
 // Click here and start typing.
 package main
 
@@ -20,11 +28,17 @@ func main() {
 Hello, 世界
 ```
 
-[Run](# "Run this code [shift-enter]") [Share](# "Share this code") [Tour](//tour.golang.org/ "Learn Go from your browser") Hello, World!Conway's Game of LifeFibonacci ClosurePeano IntegersConcurrent piConcurrent Prime SievePeg Solitaire SolverTree Comparison
+[Run](# "Run this code [shift-enter]") [Share](# "Share this code") [Tour](//tour.golang.org/ "Learn Go from your browser")
+Hello, World! Conway's Game of Life Fibonacci Closure Peano Integers Concurrent pi Concurrent Prime Sieve Peg Solitaire Solver Tree Comparison
+
 Go is an open source programming language that makes it easy to build
 simple, reliable, and efficient software.
 [Download Go Binary distributions available for\
-Linux, Mac OS X, Windows, and more.](/dl/) Featured videoFeatured articles [Read more](//blog.golang.org/)
+Linux, Mac OS X, Windows, and more.](/dl/)
+Featured video
+Featured articles
+[Read more](//blog.golang.org/)
+
 Build version go1.10.2.
 
 

@@ -1,6 +1,8 @@
 # Aktuelles
 
-[Event Title](/img.jpg "Event Title") 25 Mai![](/img.jpg)
+[Event Title](/img.jpg "Event Title")
+25 Mai
+![](/img.jpg)
 
 ### [Event Title](/event)
 
