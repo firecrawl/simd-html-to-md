@@ -601,3 +601,45 @@ fn test_script_with_attributes() {
     assert!(md.contains("After"));
     assert!(!md.contains("var x"));
 }
+
+#[test]
+fn test_aria_hidden_stripped() {
+    // aria-hidden="true" elements should be completely skipped (e.g., decorative shadow text)
+    let html = r#"<h2><div aria-hidden="true">Shadow text</div>Real heading</h2>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("Real heading"));
+    assert!(!md.contains("Shadow text"));
+}
+
+#[test]
+fn test_aria_hidden_nested() {
+    let html = r#"<div><div aria-hidden="true"><span>Hidden</span><p>Also hidden</p></div><p>Visible</p></div>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("Visible"));
+    assert!(!md.contains("Hidden"));
+    assert!(!md.contains("Also hidden"));
+}
+
+#[test]
+fn test_aria_hidden_false_not_stripped() {
+    let html = r#"<div aria-hidden="false"><p>Should appear</p></div>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("Should appear"));
+}
+
+#[test]
+fn test_url_entity_decoding() {
+    // &amp; in href attributes should be decoded to &
+    let html = r#"<a href="/page?a=1&amp;b=2">Link</a>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("/page?a=1&b=2"));
+    assert!(!md.contains("&amp;"));
+}
+
+#[test]
+fn test_image_src_entity_decoding() {
+    let html = r#"<img src="/img?w=100&amp;h=200" alt="Photo">"#;
+    let md = html_to_md(html);
+    assert!(md.contains("/img?w=100&h=200"));
+    assert!(!md.contains("&amp;"));
+}

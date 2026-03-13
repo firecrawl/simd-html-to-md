@@ -417,6 +417,16 @@ fn process_token<'a>(ctx: &mut Context<'a>, token: Token<'a>, options: &Options)
 
 /// Process a start tag.
 fn process_start_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>, options: &Options) {
+    // Skip aria-hidden="true" elements globally (e.g., decorative shadow text).
+    if tag
+        .get_attr("aria-hidden")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+    {
+        ctx.skip_depth = 1;
+        ctx.skip_tag_name = tag.name;
+        return;
+    }
+
     let kind = tag_kind(tag.name);
 
     // Handle tags inside code blocks (except <code> for language detection).
@@ -702,10 +712,18 @@ fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
             let text = clean_text_cow(&heading_text);
             if !text.is_empty() {
                 if ctx.in_link {
-                    let url = ctx.link_url.take().unwrap_or("");
+                    let raw_url = ctx.link_url.take().unwrap_or("");
                     let title = ctx.link_title.take();
                     ctx.in_link = false;
                     ctx.link_text.clear();
+                    // Decode HTML entities in URL
+                    let decoded_url;
+                    let url = if raw_url.contains('&') {
+                        decoded_url = crate::entities::decode_entities(raw_url);
+                        decoded_url.as_str()
+                    } else {
+                        raw_url
+                    };
                     if url.starts_with('#') || url.is_empty() {
                         // Anchor/fragment link: drop it, just keep heading text
                         let heading = format_heading(ctx.heading_level, text.as_ref());
@@ -799,8 +817,17 @@ fn process_end_tag<'a>(ctx: &mut Context<'a>, name: &str, options: &Options) {
 
         // Links
         TagKind::A if ctx.in_link => {
-            let url = ctx.link_url.take().unwrap_or("");
+            let raw_url = ctx.link_url.take().unwrap_or("");
             let title = ctx.link_title.take();
+
+            // Decode HTML entities in URL (e.g., &amp; → &)
+            let decoded_url;
+            let url = if raw_url.contains('&') {
+                decoded_url = crate::entities::decode_entities(raw_url);
+                decoded_url.as_str()
+            } else {
+                raw_url
+            };
 
             // Remove "skip to content" navigation links.
             if is_skip_to_content_link(url, &ctx.link_text) {
@@ -1161,11 +1188,22 @@ fn process_self_closing_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>) {
                 return;
             }
             let raw_alt = tag.get_attr("alt").unwrap_or("");
-            // Normalize newlines in src (strip whitespace from URLs)
-            let src_owned;
-            let src = if raw_src.contains('\n') || raw_src.contains('\r') {
-                src_owned = raw_src.split_whitespace().collect::<Vec<_>>().join("");
-                &src_owned
+            // Decode HTML entities and normalize newlines in src
+            let src_decoded;
+            let src_normalized;
+            let src = if raw_src.contains('&') || raw_src.contains('\n') || raw_src.contains('\r') {
+                let s = if raw_src.contains('&') {
+                    src_decoded = crate::entities::decode_entities(raw_src);
+                    src_decoded.as_str()
+                } else {
+                    raw_src
+                };
+                if s.contains('\n') || s.contains('\r') {
+                    src_normalized = s.split_whitespace().collect::<Vec<_>>().join("");
+                    src_normalized.as_str()
+                } else {
+                    s
+                }
             } else {
                 raw_src
             };
