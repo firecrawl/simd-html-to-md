@@ -420,10 +420,13 @@ fn process_token<'a>(ctx: &mut Context<'a>, token: Token<'a>, options: &Options)
 
 /// Process a start tag.
 fn process_start_tag<'a>(ctx: &mut Context<'a>, tag: &Tag<'a>, options: &Options) {
-    // Skip aria-hidden="true" elements globally (e.g., decorative shadow text).
-    if tag
-        .get_attr("aria-hidden")
-        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+    // Skip aria-hidden="true" elements globally (e.g., decorative shadow text),
+    // but NOT <a> tags — sites like Mintlify mark card links as aria-hidden to
+    // avoid double-announcing in screen readers, but the content is still real.
+    if !tag.name.eq_ignore_ascii_case("a")
+        && tag
+            .get_attr("aria-hidden")
+            .is_some_and(|v| v.eq_ignore_ascii_case("true"))
     {
         ctx.skip_depth = 1;
         ctx.skip_tag_name = tag.name;

@@ -628,6 +628,17 @@ fn test_aria_hidden_false_not_stripped() {
 }
 
 #[test]
+fn test_aria_hidden_link_not_stripped() {
+    // aria-hidden="true" on <a> tags should NOT strip content — sites like Mintlify
+    // use this on card links where content is visually present.
+    let html = r#"<div class="card"><a href="https://example.com" aria-hidden="true"><h2>Scrape</h2><p>Extract content from any URL</p></a></div>"#;
+    let md = html_to_md(html);
+    assert!(md.contains("Scrape"));
+    assert!(md.contains("Extract content from any URL"));
+    assert!(md.contains("example.com"));
+}
+
+#[test]
 fn test_url_entity_decoding() {
     // &amp; in href attributes should be decoded to &
     let html = r#"<a href="/page?a=1&amp;b=2">Link</a>"#;
